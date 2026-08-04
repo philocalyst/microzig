@@ -1,0 +1,14 @@
+.{
+    .name = .examples_microchip_avrdx,
+    .fingerprint = 0x2a91c0f74d3b86e5,
+    .version = "0.0.0",
+    .dependencies = .{
+        .microzig = .{ .path = "../../.." },
+    },
+
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
