@@ -1,0 +1,23 @@
+.{
+    .name = .mz_port_microchip_avrdx,
+    .fingerprint = 0x1f4d3c6ab2790e57,
+    .version = "0.0.0",
+    .dependencies = .{
+        .@"microzig/build-internals" = .{ .path = "../../../build-internals" },
+        // NOTE: atpack.microzig.tech does not currently mirror the AVR-Dx device
+        // family pack, so this points at the Microchip pack server directly.
+        // Once a maintainer uploads it, switch to:
+        //   https://atpack.microzig.tech/Microchip.AVR-Dx_DFP.2.8.343.atpack
+        .atpack = .{
+            .url = "https://packs.download.microchip.com/Microchip.AVR-Dx_DFP.2.8.343.atpack",
+            .hash = "N-V-__8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            .lazy = true,
+        },
+    },
+    .paths = .{
+        "README.md",
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
