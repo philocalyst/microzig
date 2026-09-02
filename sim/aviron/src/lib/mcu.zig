@@ -216,9 +216,11 @@ pub const xmega128a4u = Config{
 
 /// AVR32DD20 configuration (AVR-Dx series, avrxmega3)
 ///
-/// Data space: [I/O 0x0000-0x0FFF][SRAM 0x7000-0x7FFF]
-/// Flash is also aliased into data space at 0x8000 on real silicon (avrxmega3),
-/// but programs using LPM do not need that mapping emulated here.
+/// ATDF: INTERNAL_SRAM data 0x7000/0x1000 (RAMEND 0x7FFF), PROGMEM 0x8000,
+/// IO data 0x0000 size 0x103F. Emulated IO window stops at 0x0FFF because the
+/// debug device only models SP/SREG/scratch; extending it would panic on
+/// NVMCTRL (0x1000). Flash alias at data 0x8000 is not needed for LPM startup.
+/// CPU.SP/SREG are at 0x3D/0x3E/0x3F (CPU @ 0x30 + 0x0D/0x0F).
 pub const avr32dd20 = Config{
     .name = "AVR32DD20",
     .flash_size = 32768, // 32 KiB
@@ -233,11 +235,11 @@ pub const avr32dd20 = Config{
         .ramp_z = null,
         .ramp_d = null,
         .e_ind = null,
-        // aviron's debug device models SP/SREG at these fixed addresses.
+        // CPU @ 0x30: SP @ +0x0D, SREG @ +0x0F -> 0x3D/0x3E/0x3F.
         .sp_l = 0x3D,
         .sp_h = 0x3E,
         .sreg = 0x3F,
     },
     .io_window_base = 0x0000,
-    .io_window_end = 0x0FFF,
+    .io_window_end = 0x0FFF, // truncated vs ATDF IO size 0x103F; see comment
 };

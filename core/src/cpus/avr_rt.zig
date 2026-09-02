@@ -7,10 +7,12 @@
 //! register conventions the generated callers use:
 //!
 //! - `__mulsi3(a, b) -> a*b`, both sides treat the values as bit patterns.
-//! - `__udivmodsi4(a, b, &rem) -> quotient`.
-//! - `__udivmodhi4(a, b) -> {quotient, remainder}` with the pair packed into
-//!   one 32-bit return value (low word = quotient, high word = remainder),
-//!   which is what the emitted call sites expect.
+//! - `__udivmodsi4(a, b) -> packed u64` (low 32 = quotient, high 32 = remainder).
+//!   Despite the libgcc-style name there is no remainder out-pointer; LLVM's
+//!   AVR backend expects the packed register form.
+//! - `__udivmodhi4(a, b) -> packed u32` (low 16 = quotient, high 16 = remainder).
+//!   This matches the AVR GCC special calling convention (quot in R23:R22,
+//!   rem in R25:R24), which is what LLVM emits call sites for.
 //!
 //! The arithmetic itself is plain shift-and-subtract/add so it cannot recurse
 //! back into the runtime.
@@ -47,9 +49,12 @@ test u16_divmod {
     try @import("std").testing.expectEqual(@as(u16, 5), r.rem);
 }
 
-pub export fn __udivmodhi4(num: u16, den: u16) callconv(.c) extern struct { quot: u16, rem: u16 } {
+/// 16-bit unsigned division. AVR GCC/LLVM special ABI: quotient in R23:R22,
+/// remainder in R25:R24 — identical to returning a little-endian packed `u32`
+/// with the quotient in the low half-word.
+pub export fn __udivmodhi4(num: u16, den: u16) callconv(.c) u32 {
     const r = u16_divmod(num, den);
-    return .{ .quot = r.quot, .rem = r.rem };
+    return (@as(u32, r.rem) << 16) | r.quot;
 }
 
 fn u32_divmod(num_in: u32, den: u32) struct { quot: u32, rem: u32 } {
@@ -130,25 +135,30 @@ pub export fn __udivmodqi4(a: u8, b: u8) callconv(.c) u16 {
 }
 
 /// 16-bit signed division. Same packed register shape as `__udivmodhi4`:
-/// quotient low word, remainder high word.
-pub export fn __divmodhi4(a: i16, b: i16) callconv(.c) extern struct { quot: i16, rem: i16 } {
+/// quotient low word, remainder high word (returned as one `u32` so Zig does
+/// not insert an sret pointer the way an `extern struct` / `i32` pair might).
+pub export fn __divmodhi4(a: i16, b: i16) callconv(.c) u32 {
     const neg_q = (a < 0) != (b < 0);
     const ua: u16 = @abs(a);
     const ub: u16 = @abs(b);
     const r = u16_divmod(ua, ub);
-    return .{
-        .quot = if (neg_q) @as(i16, @bitCast(-%r.quot)) else @bitCast(r.quot),
-        .rem = if (a < 0) @as(i16, @bitCast(-%r.rem)) else @bitCast(r.rem),
-    };
+    const quot: u16 = if (neg_q) -%r.quot else r.quot;
+    const rem: u16 = if (a < 0) -%r.rem else r.rem;
+    return (@as(u32, rem) << 16) | quot;
 }
 
 test __divmodhi4 {
+    // Packed form: remainder in the high 16 bits, quotient in the low 16.
     const q = __divmodhi4(-1000, 3);
-    try @import("std").testing.expectEqual(@as(i16, -333), q.quot);
-    try @import("std").testing.expectEqual(@as(i16, -1), q.rem);
+    const q_rem: i16 = @bitCast(@as(u16, @truncate(q >> 16)));
+    const q_quot: i16 = @bitCast(@as(u16, @truncate(q)));
+    try @import("std").testing.expectEqual(@as(i16, -333), q_quot);
+    try @import("std").testing.expectEqual(@as(i16, -1), q_rem);
     const p = __divmodhi4(1000, -3);
-    try @import("std").testing.expectEqual(@as(i16, -333), p.quot);
-    try @import("std").testing.expectEqual(@as(i16, 1), p.rem);
+    const p_rem: i16 = @bitCast(@as(u16, @truncate(p >> 16)));
+    const p_quot: i16 = @bitCast(@as(u16, @truncate(p)));
+    try @import("std").testing.expectEqual(@as(i16, -333), p_quot);
+    try @import("std").testing.expectEqual(@as(i16, 1), p_rem);
 }
 
 /// 8-bit signed division. Packed like `__divmodqi4`: quotient R24, remainder

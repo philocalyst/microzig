@@ -23,6 +23,10 @@ pub fn export_startup_logic() void {
     _ = &avr_rt.__mulsi3;
     _ = &avr_rt.__udivmodsi4;
     _ = &avr_rt.__udivmodhi4;
+    _ = &avr_rt.__udivmodqi4;
+    _ = &avr_rt.__divmodsi4;
+    _ = &avr_rt.__divmodhi4;
+    _ = &avr_rt.__divmodqi4;
     @export(&vector_table, .{
         .name = "_start",
     });

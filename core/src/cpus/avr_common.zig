@@ -8,11 +8,11 @@ pub fn abort() callconv(.c) noreturn {
 
 pub const interrupt = struct {
     pub fn enable_interrupts() void {
-        asm volatile ("sei");
+        asm volatile ("sei" ::: .{ .memory = true });
     }
 
     pub fn disable_interrupts() void {
-        asm volatile ("cli");
+        asm volatile ("cli" ::: .{ .memory = true });
     }
 };
 
@@ -20,7 +20,7 @@ pub const interrupt = struct {
 pub const HandlerFn = union(enum) {
     /// Standard AVR interrupt handler. Disables global interrupts while it is
     /// executing. Compiler generates prologue for pushing clobbered registers to
-    /// the stack, and corresponding epilogue with `reti` intsruction for
+    /// the stack, and corresponding epilogue with `reti` instruction for
     /// returning from an interrupt.
     signal: *const fn () callconv(.avr_signal) void,
     /// Similar to the signal calling convention, but global interrupts are
@@ -118,8 +118,8 @@ pub const startup_logic = struct {
     extern fn microzig_main() noreturn;
 
     export fn microzig_start() callconv(.c) noreturn {
-        // At startup the stack pointer is at the end of RAM
-        // so, no need to set it manually!
+        // Hardware reset loads CPU.SP with RAMEND (ATDF CPU.SP
+        // initval=0x7FFF on AVR32DD20; DS40002413 section 7.4.4).
 
         copy_data_to_ram();
         clear_bss();
@@ -128,6 +128,8 @@ pub const startup_logic = struct {
     }
 
     fn copy_data_to_ram() void {
+        // LPM is correct for avrxmega3/AVR Dx: .data LMA is in program space,
+        // and these parts have no RAMPZ (flash <= 64 KiB).
         asm volatile (
             \\  ; load Z register with the address of the data in flash
             \\  ldi r30, lo8(microzig_data_load_start)
@@ -148,8 +150,18 @@ pub const startup_logic = struct {
             \\  cp r26, r24
             \\  cpc r27, r25 ; check and branch if we are at the end of data
             \\  brne .L1
+            :::
+            .{
+                .r18 = true,
+                .r24 = true,
+                .r25 = true,
+                .r26 = true,
+                .r27 = true,
+                .r30 = true,
+                .r31 = true,
+                .memory = true,
+            }
         );
-        // Probably a good idea to add clobbers here, but compiler doesn't seem to care
     }
 
     fn clear_bss() void {
@@ -170,7 +182,15 @@ pub const startup_logic = struct {
             \\  cp r26, r24
             \\  cpc r27, r25 ; check and branch if we are at the end of bss
             \\  brne .L3
+            :::
+            .{
+                .r18 = true,
+                .r24 = true,
+                .r25 = true,
+                .r26 = true,
+                .r27 = true,
+                .memory = true,
+            }
         );
-        // Probably a good idea to add clobbers here, but compiler doesn't seem to care
     }
 };
