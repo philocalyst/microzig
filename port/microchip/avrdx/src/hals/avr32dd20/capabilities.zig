@@ -92,27 +92,19 @@ pub const Port = enum(u2) {
     }
 
     pub const count_bonded: usize = blk: {
-        var n: usize = 0;
-        for (std.enums.values(Port)) |p| {
-            var i: u3 = 0;
-            while (true) : (i += 1) {
-                if (p.bonded(i)) n += 1;
-                if (i == 7) break;
-            }
-        }
-        break :blk n;
+        var total: usize = 0;
+        for (std.enums.values(Port)) |p| total += @popCount(p.available_pins());
+        break :blk total;
     };
 
     pub const count_output_capable: usize = blk: {
-        var n: usize = 0;
+        var total: usize = 0;
         for (std.enums.values(Port)) |p| {
-            var i: u3 = 0;
-            while (true) : (i += 1) {
-                if (p.output_capable(i)) n += 1;
-                if (i == 7) break;
-            }
+            total += @popCount(p.available_pins());
+            // PF6 is bonded but input-only.
+            if (p == .f and p.bonded(6)) total -= 1;
         }
-        break :blk n;
+        break :blk total;
     };
 };
 

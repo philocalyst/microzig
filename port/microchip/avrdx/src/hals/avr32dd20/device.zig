@@ -115,15 +115,10 @@ pub const fuses = struct {
     }
 
     /// FUSE.SYSCFG0.RSTPINCFG - what PF6 is wired to do.
-    pub const ResetPinMode = enum(u1) {
-        /// PF6 is an ordinary GPIO; only an HV pulse or UPDI can reset.
-        gpio = 0x0,
-        /// PF6 is the RESET input.
-        reset = 0x1,
-    };
+    pub const ResetPinMode = microzig.chip.types.peripherals.FUSE.FUSE_RSTPINCFG;
 
     pub fn reset_pin_mode() ResetPinMode {
-        return @fromBackingInt(@intCast(chip.FUSE.SYSCFG0.read().RSTPINCFG));
+        return chip.FUSE.SYSCFG0.read().RSTPINCFG;
     }
 
     /// FUSE.SYSCFG0.UPDIPINCFG - whether PF7 is still the UPDI programming
@@ -134,14 +129,10 @@ pub const fuses = struct {
     }
 
     /// FUSE.SYSCFG1.MVSYSCFG - how MVIO is wired.
-    pub const MvioSystemConfig = enum(u2) {
-        dual_supply = 0x1,
-        single_supply = 0x2,
-        _,
-    };
+    pub const MvioSystemConfig = microzig.chip.types.peripherals.FUSE.FUSE_MVSYSCFG;
 
     pub fn mvio_system_config() MvioSystemConfig {
-        return @fromBackingInt(@intCast(chip.FUSE.SYSCFG1.read().MVSYSCFG));
+        return chip.FUSE.SYSCFG1.read().MVSYSCFG;
     }
 
     /// FUSE.SYSCFG1.SUT - the start-up delay after reset.

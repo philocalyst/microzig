@@ -53,11 +53,9 @@ const microzig = @import("microzig");
 /// Data-space address of CPU.CCP (`0x0034`, from the generated register layer).
 pub const ccp_address: u16 = @intFromPtr(&microzig.chip.peripherals.CPU.CCP);
 
-/// CPU.CCP signatures, DS40002413 section 7.4.6, page 37.
-pub const Signature = enum(u8) {
-    spm = 0x9D,
-    ioreg = 0xD8,
-};
+/// CPU.CCP signatures from the generated layer (ATDF CPU_CCP).
+/// Values: SPM=0x9D, IOREG=0xD8. DS40002413 section 7.4.6, page 37.
+pub const Signature = microzig.chip.types.peripherals.CPU.CPU_CCP;
 
 fn hex(comptime v: u16) []const u8 {
     // std.fmt is deliberately avoided here; this is comptime only.
@@ -91,12 +89,15 @@ fn hex(comptime v: u16) []const u8 {
 ///
 /// https://ww1.microchip.com/downloads/aemDocuments/documents/MCU08/ProductDocuments/DataSheets/AVR32-16DD20-14-Complete-DataSheet-DS40002413.pdf#page=37
 pub inline fn write_io(comptime address: u16, value: u8) void {
+    // CPU.CCP data address 0x34 => I/O 0x14 (AVR data-space = I/O + 0x20).
+    const ccp_io = comptime hex(@as(u16, @intCast(ccp_address - 0x20)));
     var sig: u8 = undefined;
-    asm volatile ("ldi %[sig], " ++ hex(@backingInt(Signature.ioreg)) ++ "\n" ++
-            "out 0x14, %[sig]\n" ++
+    asm volatile ("ldi %[sig], " ++ hex(@backingInt(Signature.IOREG)) ++ "\n" ++
+            "out " ++ ccp_io ++ ", %[sig]\n" ++
             "sts " ++ hex(address) ++ ", %[val]"
         : [sig] "=&d" (sig),
         : [val] "r" (value),
+        : "memory",
     );
 }
 
@@ -106,12 +107,14 @@ pub inline fn write_io(comptime address: u16, value: u8) void {
 /// DS40002413 section 11.3.6 "Configuration Change Protection", page 79.
 /// https://ww1.microchip.com/downloads/aemDocuments/documents/MCU08/ProductDocuments/DataSheets/AVR32-16DD20-14-Complete-DataSheet-DS40002413.pdf#page=79
 pub inline fn write_spm(comptime address: u16, value: u8) void {
+    const ccp_io = comptime hex(@as(u16, @intCast(ccp_address - 0x20)));
     var sig: u8 = undefined;
-    asm volatile ("ldi %[sig], " ++ hex(@backingInt(Signature.spm)) ++ "\n" ++
-            "out 0x14, %[sig]\n" ++
+    asm volatile ("ldi %[sig], " ++ hex(@backingInt(Signature.SPM)) ++ "\n" ++
+            "out " ++ ccp_io ++ ", %[sig]\n" ++
             "sts " ++ hex(address) ++ ", %[val]"
         : [sig] "=&d" (sig),
         : [val] "r" (value),
+        : "memory",
     );
 }
 

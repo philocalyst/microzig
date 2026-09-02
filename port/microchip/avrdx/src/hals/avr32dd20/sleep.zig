@@ -9,60 +9,46 @@ const ccp = @import("ccp.zig");
 const slpctrl = microzig.chip.peripherals.SLPCTRL;
 const gen = microzig.chip.types.peripherals.SLPCTRL;
 
-const CtrlABits = @TypeOf(slpctrl.CTRLA).underlying_type;
 const VregctrlBits = @TypeOf(slpctrl.VREGCTRL).underlying_type;
 
-/// SLPCTRL.CTRLA.SMODE.
+/// SLPCTRL.CTRLA.SMODE. Friendly tags; encodings from generated SLPCTRL_SMODE.
 ///
 /// DS40002413 section 13.3.3.1 "Sleep Modes", page 113: which peripherals keep
 /// running differs sharply between these, most importantly that in power-down
 /// only the fully asynchronous wake sources (PIT, pin level/both-edges
 /// interrupts, TWI address match, BOD/VLM) remain live.
 /// https://ww1.microchip.com/downloads/aemDocuments/documents/MCU08/ProductDocuments/DataSheets/AVR32-16DD20-14-Complete-DataSheet-DS40002413.pdf#page=113
-pub const Mode = enum(u8) {
-    /// CPU stopped, all peripherals and interrupts still running.
-    idle = 0x0,
-    /// Only peripherals with RUNSTDBY set keep their clock.
-    standby = 0x1,
-    /// Lowest power; almost everything is stopped.
-    power_down = 0x2,
+pub const Mode = enum(u2) {
+    idle = @intFromEnum(gen.SLPCTRL_SMODE.IDLE),
+    standby = @intFromEnum(gen.SLPCTRL_SMODE.STDBY),
+    power_down = @intFromEnum(gen.SLPCTRL_SMODE.PDOWN),
 
     fn to_field(mode: Mode) gen.SLPCTRL_SMODE {
-        return switch (mode) {
-            .idle => .IDLE,
-            .standby => .STDBY,
-            .power_down => .PDOWN,
-        };
+        return @enumFromInt(@intFromEnum(mode));
     }
 };
 
 /// SLPCTRL.VREGCTRL.PMODE - voltage regulator performance mode.
 pub const RegulatorMode = enum(u1) {
-    /// Regulator follows the sleep mode automatically.
-    auto = 0x0,
-    /// Regulator stays in full-power mode, trading current for wake-up time.
-    full = 0x1,
+    auto = @intFromEnum(gen.SLPCTRL_PMODE.AUTO),
+    full = @intFromEnum(gen.SLPCTRL_PMODE.FULL),
 
     fn to_field(mode: RegulatorMode) gen.SLPCTRL_PMODE {
-        return switch (mode) {
-            .auto => .AUTO,
-            .full => .FULL,
-        };
+        return @enumFromInt(@intFromEnum(mode));
     }
 };
 
-// SLPCTRL's "Configuration Change Protection" subsection (DS40002413 section
-// 13.3.5, page 116) protects VREGCTRL and nothing else: Table 13-6 has the one
-// row, and CTRLA's register description (section 13.5.1, page 118) reads
-// `Property: -`. So the sleep mode and SEN are written plainly, and only
-// `set_regulator_mode` below opens a CCP window.
+// SLPCTRL Configuration Change Protection (DS40002413 section 13.3.5, page 116)
+// protects VREGCTRL and nothing else: Table 13-6 has the one row, and CTRLA
+// reads Property: -. Sleep mode and SEN are written plainly; only
+// set_regulator_mode opens a CCP window.
 
 /// Select the sleep mode without arming sleep.
 pub fn set_mode(mode: Mode) void {
     slpctrl.CTRLA.modify(.{ .SMODE = mode.to_field() });
 }
 
-/// Arm sleep (CTRLA.SEN) so that a `sleep()` actually suspends the CPU.
+/// Arm sleep (CTRLA.SEN) so that a sleep() actually suspends the CPU.
 pub fn enable(mode: Mode) void {
     slpctrl.CTRLA.write(.{
         .SEN = 1,
@@ -70,7 +56,7 @@ pub fn enable(mode: Mode) void {
     });
 }
 
-/// Clear SLPCTRL.CTRLA.SEN so the next `sleep_instruction` executes
+/// Clear SLPCTRL.CTRLA.SEN so the next sleep instruction executes
 /// as a normal idle wait instead of the configured sleep mode.
 pub fn disable() void {
     var bits = slpctrl.CTRLA.read();
