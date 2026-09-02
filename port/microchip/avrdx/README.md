@@ -17,7 +17,7 @@ modules themselves are shared architecture.
 | Core | AVR Dx, `avrxmega3` |
 | Flash | 32 KiB, 512-byte pages, mapped into data space at `0x8000` |
 | SRAM | 4 KiB at `0x7000` |
-| EEPROM | 256 B at `0x1400`, byte-erasable |
+| EEPROM | 256 B at `0x1400`, byte-erasable, *command-first* (`EEERWR`; no tinyAVR `PAGEERASEWRITE`) |
 | User row | 32 B at `0x1080` |
 | Max frequency | 24 MHz internal, 32 MHz external |
 | Signature | `1E 95 3A` |
@@ -116,12 +116,12 @@ store the hardware would have discarded.
 
 ## Verification status
 
-All five examples link and emit ELF + Intel HEX for
-`avr-freestanding-eabi` / `avrxmega3` in `ReleaseSmall` on the pinned Zig
-(`0.17.0-dev.1857+3c46da14d`, see the sources manifest). Register addresses,
-bit positions and enum encodings come from regz output of the vendored ATDF
-rather than hand transcription. Timing and electrical behaviour have not been
-observed on silicon.
+All six firmware targets (five demos plus `abi_probe`) link and emit ELF +
+Intel HEX for `avr-freestanding-eabi` / `avrxmega3` in `ReleaseSmall` on the
+pinned Zig (`0.17.0-dev.1857+3c46da14d`, see the sources manifest). Register
+addresses, bit positions and enum encodings come from regz output of the
+vendored ATDF rather than hand transcription. Timing and electrical behaviour
+have not been observed on silicon.
 
 ## FYI: LLVM issues
 

@@ -1,18 +1,32 @@
 #!/usr/bin/env bash
 # AVR32DD20 full verification battery.
 #
-# One command: formatting, host tests, firmware builds for all five examples
+# One command: formatting, host tests, firmware builds for all six targets
 # in ReleaseSmall, machine-code-level checks (vector table, SRAM placement,
-# comptime GPIO folding, CCP adjacency), provenance and citation gates,
-# page-number verification of every datasheet citation in HAL comments,
-# documentation coverage of every public declaration, and a naming audit.
+# comptime GPIO folding, CCP adjacency), NVM ATDF geometry/command gates,
+# provenance and citation gates, page-number verification of every datasheet
+# citation in HAL comments, documentation coverage of every public
+# declaration, and a naming audit.
 #
 # Run from the repository root:
 #   ./scripts/verify_avr32dd20_all.sh
+# Optional env: ZIG=/path/to/zig  OBJDUMP=/path/to/llvm-objdump
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-ZIG="${ZIG:-/var/folders/vf/qpw72bpn65g0y01bnbwf90n80000gn/T/opencode/toolchain/zig-aarch64-macos-0.17.0-dev.1857+3c46da14d/zig}"
+resolve_zig() {
+    if [ -n "${ZIG:-}" ] && [ -x "$ZIG" ]; then
+        printf "%s" "$ZIG"
+        return 0
+    fi
+    if command -v zig >/dev/null 2>&1; then
+        command -v zig
+        return 0
+    fi
+    echo "FAIL: set ZIG to the pinned 0.17 toolchain (see docs/avr32dd20-sources.zon)" >&2
+    exit 1
+}
+ZIG="$(resolve_zig)"
 EXAMPLES="$ROOT/examples/microchip/avrdx"
 PORT="$ROOT/port/microchip/avrdx"
 FIRMWARE="$EXAMPLES/zig-out/firmware"
@@ -32,7 +46,7 @@ record() {
     fi
 }
 
-banner "1/11 zig fmt"
+banner "1/12 zig fmt"
 if "$ZIG" fmt --check \
     "$ROOT/port/microchip/avrdx/src/" \
     "$ROOT/core/src/" \
@@ -42,14 +56,14 @@ else
     record 1 "formatting is canonical"
 fi
 
-banner "2/11 host test suite"
+banner "2/12 host test suite"
 if ( cd "$PORT" && "$ZIG" build test --summary all ) >/dev/null 2>&1; then
     record 0 "host unit tests (ADC math, CCP windows, avr_rt)"
 else
     record 1 "host unit tests failed"
 fi
 
-banner "3/11 firmware builds (ReleaseSmall)"
+banner "3/12 firmware builds (ReleaseSmall)"
 build_failed=0
 for ex in blinky pwm_adc usart pit_sleep mvio abi_probe; do
     if ! ( cd "$EXAMPLES" && "$ZIG" build -Doptimize=ReleaseSmall "-Dexample=$ex" ) \
@@ -66,7 +80,7 @@ else
     record 1 "expected 6 ELF + 6 HEX artifacts"
 fi
 
-banner "4/11 disassembly verification"
+banner "4/12 disassembly verification"
 if python3 "$ROOT/scripts/check_avr32dd20_disassembly.py" "$FIRMWARE"/*.elf >/dev/null 2>&1; then
     record 0 "vectors, SRAM placement, SBI/CBI folding, CCP adjacency"
 else
@@ -77,7 +91,7 @@ fi
 # configured as an AVR32DD20 (avrxmega3). This proves at runtime that the
 # compiler's division/multiply lowering matches the register conventions of
 # core/src/cpus/avr_rt.zig -- something static checks cannot see.
-banner "5/11 runtime ABI emulation (aviron, AVR32DD20)"
+banner "5/12 runtime ABI emulation (aviron, AVR32DD20)"
 AVIRON="$ROOT/sim/aviron/zig-out/bin/aviron"
 if [ ! -x "$AVIRON" ]; then
     ( cd "$ROOT/sim/aviron" && "$ZIG" build ) >/dev/null 2>&1
@@ -89,21 +103,21 @@ if [ -x "$AVIRON" ]; then
 fi
 record "$sim_rc" "avr_rt div/mul results correct under emulation"
 
-banner "6/11 CCP dedicated gate"
+banner "6/12 CCP dedicated gate"
 if python3 "$ROOT/scripts/check_ccp_disassembly.py" "$FIRMWARE/avr32dd20_blinky.elf" >/dev/null 2>&1; then
     record 0 "CCP ldi->out->sts adjacency (blinky)"
 else
     record 1 "CCP adjacency broken"
 fi
 
-banner "7/11 citation format audit"
+banner "7/12 citation format audit"
 if bash "$ROOT/scripts/check_avr32dd20_citations.sh" >/dev/null 2>&1; then
     record 0 "datasheet citations well-formed"
 else
     record 1 "malformed citations found"
 fi
 
-banner "8/11 citation page-number audit"
+banner "8/12 citation page-number audit"
 # Resolves every 'section N.N ... page P' claim against where that section
 # header actually appears in DS40002413B.
 page_summary=$(python3 "$ROOT/scripts/check_avr32dd20_page_numbers.py" | tail -1)
@@ -113,14 +127,21 @@ else
     record 1 "citation mismatches: $page_summary"
 fi
 
-banner "9/11 provenance manifest"
+banner "9/12 provenance manifest"
 if bash "$ROOT/scripts/verify_avr32dd20_sources.sh" >/dev/null 2>&1; then
     record 0 "pack/ATDF hashes and toolchain pin"
 else
     record 1 "provenance mismatch"
 fi
 
-banner "10/11 documentation coverage"
+banner "10/12 NVM ATDF geometry and command set"
+if python3 "$ROOT/scripts/check_avr32dd20_nvm_atdf.py" >/dev/null 2>&1; then
+    record 0 "flash 512B / EEPROM byte / Dx commands (no PAGEERASEWRITE)"
+else
+    record 1 "NVM ATDF geometry/command gate failed"
+fi
+
+banner "11/12 documentation coverage"
 # Every 'pub fn'/'pub const' must have a doc comment on the line directly
 # above it. `grep -v` exits 1 when nothing remains -- which here means zero
 # undocumented declarations, i.e. success -- hence `|| true`.
@@ -137,7 +158,7 @@ else
     record 1 "$doc_lines public declaration(s) missing doc comments"
 fi
 
-banner "11/11 naming audit (no stuttered APIs)"
+banner "12/12 naming audit (no stuttered APIs)"
 # Public type aliases must translate generated register spellings into domain
 # vocabulary: `adc.Resolution` is fine, an ALL_CAPS `adc.ADC_RESSEL` is not.
 raw_exports=$(grep -hE '^pub const [A-Z][A-Z0-9_]* = (gen|microzig\.chip\.types)' \

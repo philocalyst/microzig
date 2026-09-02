@@ -12,10 +12,12 @@
 //!
 //! Two safety rules this module enforces that raw register access would not:
 //!
-//! 1. *Command lifetime.* A selected write command stays armed until cleared;
-//!    any stray store into mapped flash/EEPROM while it is armed performs a
-//!    write. Every write path here clears the command before returning, and
-//!    `Command` values never escape this file.
+//! 1. *Command lifetime.* A selected write command stays armed until cleared
+//!    (NOCMD/NONE or NOOP -- DS40002413 section 11.3.2.3 / 11.5.1); any stray
+//!    store into mapped flash/EEPROM while it is armed performs a write.
+//!    Every write path here clears the command before returning. Prefer the
+//!    typed helpers over calling `select` directly so the command cannot be
+//!    left armed across an unexpected return.
 //! 2. *Bounds and alignment.* Flash self-programming works on 512-byte pages
 //!    and only from code executing in the boot section; EEPROM addresses are
 //!    checked against the 256-byte size so a wrapped u8 cannot alias.
@@ -214,7 +216,9 @@ pub const eeprom = struct {
     /// Returns the number of bytes actually written.
     ///
     /// The command stays selected across the whole run (one arming instead of
-    /// one per byte), then is always cleared.
+    /// one per byte), then is always cleared. DS40002413 section 11.3.2.3.5:
+    /// "Several erase/writes can be done while the EEERWR mode is enabled".
+    /// tinyAVR `PAGEERASEWRITE` does not exist on AVR Dx (ATDF NVMCTRL_CMD).
     pub fn write_all(start: Address, bytes: []const u8) usize {
         if (bytes.len == 0) return 0;
         const start_i = @backingInt(start);
@@ -441,4 +445,46 @@ test "flash page bounds" {
     // flash.size == max(u15) + 1 and every u15 input is either inside the last
     // page or unaligned. The `offset + len > size` guard remains as defense for
     // any future widening of the offset parameter type.
+}
+
+test "ATDF memory geometry" {
+    const testing = std.testing;
+    // Cross-check capabilities against AVR32DD20.atdf address spaces and
+    // DS40002413 Table 8-1 / 8-3 (flash 512 B pages, EEPROM 256 B @ 0x1400).
+    try testing.expectEqual(@as(u16, 512), flash.page_size);
+    try testing.expectEqual(@as(u32, 32 * 1024), flash.size);
+    try testing.expectEqual(@as(u16, 0x8000), flash.mapped_base);
+    try testing.expectEqual(@as(u16, 256), eeprom.size);
+    try testing.expectEqual(@as(u16, 0x1400), eeprom.base_address);
+    try testing.expectEqual(@as(u16, 1), capabilities.eeprom_page_size);
+    try testing.expectEqual(@as(u16, 32), user_row.size);
+    try testing.expectEqual(@as(u16, 0x1080), user_row.base_address);
+}
+
+test "eeprom address covers full array" {
+    const testing = std.testing;
+    // enum(u8) Address holds every legal offset 0..255; from_int never nulls.
+    try testing.expect(eeprom.Address.from_int(0) != null);
+    try testing.expect(eeprom.Address.from_int(255) != null);
+    try testing.expectEqual(@as(u16, 0x1400), eeprom.Address.from_int(0).?.absolute());
+    try testing.expectEqual(@as(u16, 0x14FF), eeprom.Address.from_int(255).?.absolute());
+}
+
+test "AVR Dx command encodings exclude tinyAVR PAGEERASEWRITE" {
+    const testing = std.testing;
+    // ATDF NVMCTRL_CMD: NONE/NOOP/FLWR/FLPER/EEWR/EEERWR/EECHER -- no 0x05.
+    try testing.expectEqual(@as(u7, 0x00), @backingInt(Command.NONE));
+    try testing.expectEqual(@as(u7, 0x01), @backingInt(Command.NOOP));
+    try testing.expectEqual(@as(u7, 0x02), @backingInt(Command.FLWR));
+    try testing.expectEqual(@as(u7, 0x08), @backingInt(Command.FLPER));
+    try testing.expectEqual(@as(u7, 0x12), @backingInt(Command.EEWR));
+    try testing.expectEqual(@as(u7, 0x13), @backingInt(Command.EEERWR));
+    try testing.expectEqual(@as(u7, 0x30), @backingInt(Command.EECHER));
+    // tinyAVR PAGEERASEWRITE is typically 0x05; confirm it is not a named Dx cmd.
+    const page_erase_write: u7 = 0x05;
+    var matched = false;
+    inline for (@typeInfo(Command).@"enum".fields) |field| {
+        if (field.value == page_erase_write) matched = true;
+    }
+    try testing.expect(!matched);
 }

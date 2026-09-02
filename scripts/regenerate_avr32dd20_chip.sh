@@ -29,3 +29,5 @@ cp -r "$tmp/AVR32DD20.zig/types" "$OUT.new/"
 diff -ru "$OUT" "$OUT.new" || true
 echo "--- review the diff above, then:"
 echo "  rm -rf $OUT && mv $OUT.new $OUT"
+echo "Then re-run: python3 scripts/check_avr32dd20_nvm_atdf.py"
+echo "(Do not mass-regenerate on cosmetic ATDF churn; only when NVM/geometry or registers diverge.)"

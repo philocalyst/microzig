@@ -33,22 +33,22 @@ pub fn main() void {
         .configure_pin = false,
     });
 
-    var show_fault = false;
+    // Direction is set once; put() toggles the level thereafter.
+    hal.gpio.configure_output(mvio_out, false);
 
     while (true) {
         if (dual_supply) {
             // Park the MVIO output low whenever its supply is absent; a
             // floating or back-powered pad can leak into the peripheral.
-            show_fault = !hal.mvio.vddio2_ok();
-            if (show_fault) {
+            if (!hal.mvio.vddio2_ok()) {
                 mvio_out.put(false);
-                status.put(show_fault);
+                status.put(true);
                 continue;
             }
         }
 
         // Drive the MVIO pin and mirror "supply present" on the LED.
-        hal.gpio.configure_output(mvio_out, true);
+        mvio_out.put(true);
 
         hal.adc.start();
         while (!hal.adc.result_ready()) {}

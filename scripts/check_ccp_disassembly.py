@@ -9,12 +9,28 @@ in ccp.zig guarantees this; this script checks the real binary.
 llvm's AVR disassembler lacks avrxmega3 sts decoding and prints "<unknown>",
 so sts is recognized from its opcode bytes: word1 == 0x93.
 """
+import os
 import re
+import shutil
 import subprocess
 import sys
 
+def resolve_objdump():
+    env = os.environ.get('OBJDUMP') or os.environ.get('LLVM_OBJDUMP')
+    if env and os.path.isfile(env) and os.access(env, os.X_OK):
+        return env
+    for candidate in (
+        '/opt/homebrew/opt/llvm/bin/llvm-objdump',
+        '/usr/local/opt/llvm/bin/llvm-objdump',
+        shutil.which('llvm-objdump'),
+        shutil.which('objdump'),
+    ):
+        if candidate and os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    sys.exit('llvm-objdump not found; set OBJDUMP=...')
+
 elf = sys.argv[1] if len(sys.argv) > 1 else 'zig-out/firmware/avr32dd20_blinky.elf'
-r = subprocess.run(['/opt/homebrew/opt/llvm/bin/llvm-objdump', '-d', elf],
+r = subprocess.run([resolve_objdump(), '-d', elf],
                    capture_output=True, text=True)
 lines = r.stdout.splitlines()
 

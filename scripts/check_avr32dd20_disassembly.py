@@ -16,11 +16,27 @@ For every ELF this proves, from the actual machine code and section table:
 Usage: check_avr32dd20_disassembly.py <elf> [<elf> ...]
 Exit status 0 = every check passed on every image.
 """
+import os
 import re
+import shutil
 import subprocess
 import sys
 
-OBJDUMP = '/opt/homebrew/opt/llvm/bin/llvm-objdump'
+def resolve_objdump():
+    env = os.environ.get('OBJDUMP') or os.environ.get('LLVM_OBJDUMP')
+    if env and os.path.isfile(env) and os.access(env, os.X_OK):
+        return env
+    for candidate in (
+        '/opt/homebrew/opt/llvm/bin/llvm-objdump',
+        '/usr/local/opt/llvm/bin/llvm-objdump',
+        shutil.which('llvm-objdump'),
+        shutil.which('objdump'),
+    ):
+        if candidate and os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    sys.exit('llvm-objdump not found; set OBJDUMP=...')
+
+OBJDUMP = resolve_objdump()
 SRAM_BASE_DATA_ADDR = 0x807000
 
 failures = []

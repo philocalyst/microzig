@@ -21,7 +21,7 @@ pub fn main() void {
     // WO0..WO5 land on PA0..PA5 in this position. The peripheral overrides the
     // pin value but not its direction, so PA0 still has to be an output.
     hal.portmux.set_tca0(.PORTA);
-    hal.gpio.set_direction(led, .output);
+    hal.gpio.configure_output(led, false);
 
     hal.tca0.single.configure(.{
         .waveform = .SINGLESLOPE,

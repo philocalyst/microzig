@@ -17,14 +17,13 @@ const gen = microzig.chip.types.peripherals.CRCSCAN;
 /// the generated layer.
 pub const Source = gen.CRCSCAN_SRC;
 
-/// Start a scan.
+/// Start a CRC scan over `source`.
 ///
 /// `non_maskable` promotes a CRC failure to an NMI, which cannot be masked or
 /// disabled again before reset -- the right choice when a corrupt flash should
 /// never be allowed to keep running. The CRC value itself must have been
 /// programmed at the end of the selected section, normally by the programming
 /// tool.
-/// Start a CRC scan over `source`.
 ///
 /// Section 30.5.2: CTRLB "is not writable when the CRCSCAN is busy", so any
 /// scan still running is reset first -- otherwise the SRC write silently
@@ -62,11 +61,14 @@ pub fn stop() void {
 /// RESET clears "the entire CRCSCAN"), so this re-arms the last requested
 /// source rather than resuming mid-scan.
 pub fn restart() void {
-    var bits = crcscan.CTRLA.read();
+    // Capture SRC before RESET wipes CTRLB (section 30.5.1).
     const source = crcscan.CTRLB.read().SRC;
+    var bits = crcscan.CTRLA.read();
     bits.RESET = 1;
     bits.ENABLE = 1;
     crcscan.CTRLA.write(bits);
+    // Section 30.5.2: CTRLB is not writable while busy; wait like `start`.
+    while (busy()) {}
     crcscan.CTRLB.write(.{ .SRC = source });
 }
 

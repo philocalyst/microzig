@@ -9,8 +9,7 @@ const hal = microzig.hal;
 
 const led = hal.gpio.pins.pa7;
 
-/// Where in EEPROM the wake counter lives.
-// from_int is range-checked; the EEPROM starts at 0.
+/// Wake counter in EEPROM (command-first EEERWR via `hal.eeprom`).
 const counter_address = hal.eeprom.Address.from_int(0).?;
 
 pub fn main() void {

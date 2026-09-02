@@ -146,3 +146,17 @@ pub const mvio_enabled_by_fuse: bool = true;
 pub const vector_count = 36;
 /// The one reserved slot in the middle of the table (index 30).
 pub const reserved_vectors = &[_]u16{30};
+
+test "ATDF-backed geometry" {
+    const testing = @import("std").testing;
+    // AVR32DD20.atdf address spaces + DS40002413 Tables 8-1 / 8-3.
+    try testing.expectEqual(@as(u32, 32 * 1024), flash_size);
+    try testing.expectEqual(@as(u16, 512), flash_page_size);
+    try testing.expectEqual(@as(u16, 4 * 1024), sram_size);
+    try testing.expectEqual(@as(u16, 0x7000), sram_base);
+    try testing.expectEqual(@as(u16, 256), eeprom_size);
+    try testing.expectEqual(@as(u16, 1), eeprom_page_size);
+    try testing.expectEqual(@as(u16, 32), user_row_size);
+    try testing.expectEqual(@as(u32, 24_000_000), max_frequency_hz);
+}
+

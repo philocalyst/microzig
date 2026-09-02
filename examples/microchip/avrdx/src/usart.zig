@@ -58,8 +58,8 @@ pub fn main() void {
 
     // Default position: TxD PA0, RxD PA1.
     hal.portmux.set_usart0(.DEFAULT);
-    hal.gpio.set_direction(hal.gpio.pins.pa0, .output);
-    hal.gpio.set_direction(hal.gpio.pins.pa1, .input);
+    hal.gpio.configure_output(hal.gpio.pins.pa0, true);
+    hal.gpio.configure_input(hal.gpio.pins.pa1, .{});
 
     uart.configure(.{
         .baud_rate = 115_200,
