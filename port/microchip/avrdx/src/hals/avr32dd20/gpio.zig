@@ -60,19 +60,26 @@ pub fn available_pins(comptime port: Port) u8 {
 }
 
 /// PORTn.PINnCTRL.ISC - what the pin's input buffer does and when it raises an
-/// interrupt. DS40002413 section 18.3.3 "Interrupts", page 167.
+/// interrupt. Friendly tags; encodings taken from generated PORT_ISC so they
+/// cannot drift from the ATDF.
+/// DS40002413 section 18.3.3 "Interrupts", page 167.
 pub const Sense = enum(u3) {
-    /// Input buffer enabled, no interrupt.
-    interrupt_disabled = 0x0,
-    both_edges = 0x1,
-    rising = 0x2,
-    falling = 0x3,
-    /// Input buffer disabled entirely - the lowest-power state for an unused
-    /// pin, and required for a pin used as an analog input.
-    input_disable = 0x4,
-    /// Level-sensitive low. Only this and `both_edges` can wake the part from
-    /// power-down on a fully asynchronous pin.
-    level = 0x5,
+    interrupt_disabled = @intFromEnum(types.PORT.PORT_ISC.INTDISABLE),
+    both_edges = @intFromEnum(types.PORT.PORT_ISC.BOTHEDGES),
+    rising = @intFromEnum(types.PORT.PORT_ISC.RISING),
+    falling = @intFromEnum(types.PORT.PORT_ISC.FALLING),
+    /// Input buffer off -- lowest power for unused / analog pins.
+    input_disable = @intFromEnum(types.PORT.PORT_ISC.INPUT_DISABLE),
+    /// Level-sensitive low; with both_edges, can wake from power-down.
+    level = @intFromEnum(types.PORT.PORT_ISC.LEVEL),
+
+    fn to_field(s: Sense) types.PORT.PORT_ISC {
+        return @enumFromInt(@intFromEnum(s));
+    }
+
+    fn from_field(f: types.PORT.PORT_ISC) Sense {
+        return @enumFromInt(@intFromEnum(f));
+    }
 };
 
 /// Everything PINnCTRL controls for one pin.
@@ -87,7 +94,7 @@ pub const PinConfig = struct {
 
     pub fn encode(config: PinConfig) PinCtrlBits {
         return .{
-            .ISC = @fromBackingInt(@intCast(@backingInt(config.sense))),
+            .ISC = config.sense.to_field(),
             .PULLUPEN = @intFromBool(config.pullup),
             .INLVL = @intFromBool(config.ttl_input),
             .INVEN = @intFromBool(config.invert),
@@ -96,7 +103,7 @@ pub const PinConfig = struct {
 
     fn decode(bits: PinCtrlBits) PinConfig {
         return .{
-            .sense = @fromBackingInt(@intCast(@backingInt(bits.ISC))),
+            .sense = Sense.from_field(bits.ISC),
             .pullup = bits.PULLUPEN != 0,
             .ttl_input = bits.INLVL != 0,
             .invert = bits.INVEN != 0,
@@ -177,16 +184,15 @@ pub fn read(comptime p: Pin) bool {
     return (vport(p.port).IN & p.mask()) != 0;
 }
 
-/// Drive a value through PORT OUTSET/OUTCLR: one store either way,
-/// safe against interrupts touching other pins of the port.
+/// Drive a value through VPORTx.OUT with SBI/CBI: one instruction, atomic
+/// against interrupts touching other pins of the port.
 pub fn put(comptime p: Pin, value: bool) void {
-    // The VPORT block has no set/clear aliases, but the full PORT block's
-    // OUTSET/OUTCLR are single stores too -- same atomicity, no RMW.
-    const pb = port_block(p.port);
+    comptime if (!p.port.output_capable(p.index))
+        @compileError("pin cannot drive: input-only on this package");
     if (value) {
-        pb.OUTSET = p.mask();
+        microzig.cpu.sbi(io_num_vport_out(p.port), p.index);
     } else {
-        pb.OUTCLR = p.mask();
+        microzig.cpu.cbi(io_num_vport_out(p.port), p.index);
     }
 }
 
@@ -253,6 +259,10 @@ fn io_num_vport_dir(comptime port: Port) u5 {
     comptime return @intCast(@intFromPtr(vport(port)));
 }
 
+fn io_num_vport_out(comptime port: Port) u5 {
+    comptime return @intCast(@intFromPtr(vport(port)) + @offsetOf(types.VPORT, "OUT"));
+}
+
 fn write_pinctrl(comptime p: Pin, value: u8) void {
     const pb = port_block(p.port);
     switch (p.index) {
@@ -279,7 +289,11 @@ pub fn set_direction_rt(p: Pin, direction: Direction) void {
     const pb = port_block_rt(p.port);
     switch (direction) {
         .input => pb.DIRCLR = p.mask(),
-        .output => pb.DIRSET = p.mask(),
+        .output => {
+            // PF6 is bonded but input-only (DS40002413 peripheral overview note 3).
+            if (!p.port.output_capable(p.index)) return;
+            pb.DIRSET = p.mask();
+        },
     }
 }
 
@@ -319,11 +333,17 @@ pub fn write_port(comptime port: Port, mask: u8, value: u8) void {
 /// Change direction of several pins at once. `mask` limits the update
 /// to the listed pins; unbonded bits are ignored.
 pub fn set_port_direction(comptime port: Port, mask: u8, direction: Direction) void {
-    const bits = mask & port.available_pins();
+    var bits = mask & port.available_pins();
     const pb = port_block(port);
     switch (direction) {
         .input => pb.DIRCLR = bits,
-        .output => pb.DIRSET = bits,
+        .output => {
+            // Drop input-only bonded pins (PF6) before setting DIR.
+            inline for (0..8) |i| {
+                if (!port.output_capable(@intCast(i))) bits &= ~@as(u8, 1 << i);
+            }
+            pb.DIRSET = bits;
+        },
     }
 }
 
@@ -342,7 +362,7 @@ pub const MultiPinMode = enum { overwrite, set, clear };
 pub fn configure_pins(comptime port: Port, mask: u8, config: PinConfig, mode: MultiPinMode) void {
     const pb = port_block(port);
     pb.PINCONFIG.write(.{
-        .ISC = @fromBackingInt(@intCast(@backingInt(config.sense))),
+        .ISC = config.sense.to_field(),
         .PULLUPEN = @intFromBool(config.pullup),
         .INLVL = @intFromBool(config.ttl_input),
         .INVEN = @intFromBool(config.invert),
@@ -396,17 +416,17 @@ pub fn disable_interrupt(comptime p: Pin) void {
 
 /// Pending pin interrupts for a port, as a bit mask.
 pub fn interrupt_flags(comptime port: Port) u8 {
-    return vport(port).INTFLAGS;
+    return vport(port).INTFLAGS.raw;
 }
 
 /// Flags are cleared by writing a one to them.
 pub fn clear_interrupt(comptime p: Pin) void {
-    vport(p.port).INTFLAGS = p.mask();
+    vport(p.port).INTFLAGS.write_raw(p.mask());
 }
 
 /// Clear the latched flags of the listed pins in one INTFLAGS store.
 pub fn clear_interrupts(comptime port: Port, mask: u8) void {
-    vport(port).INTFLAGS = mask;
+    vport(port).INTFLAGS.write_raw(mask);
 }
 
 // -- Named pins --------------------------------------------------------------

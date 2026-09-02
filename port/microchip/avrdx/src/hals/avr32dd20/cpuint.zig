@@ -69,25 +69,21 @@ pub fn set_round_robin_base(vector_number: u8) void {
 ///
 /// IVSEL and CVT are the two CCP-protected bits of CTRLA (Table 15-3).
 pub fn set_compact_vector_table(enable: bool) void {
+    // Touch only CVT; preserve IVSEL and LVL0RR. The previous helper defaulted
+    // the unset option to false and cleared the sibling protected bit.
     const addr = comptime @intFromPtr(&cpuint.CTRLA);
-    ccp.write_io(addr, ctrl_byte(.{ .cvt = enable }));
+    var bits = cpuint.CTRLA.read();
+    bits.CVT = @intFromBool(enable);
+    ccp.write_io(addr, @bitCast(bits));
 }
 
 /// Move the vector table to the start of the boot section (CTRLA.IVSEL,
 /// CCP-protected per Table 15-3).
 pub fn set_vectors_in_boot_section(enable: bool) void {
     const addr = comptime @intFromPtr(&cpuint.CTRLA);
-    ccp.write_io(addr, ctrl_byte(.{ .ivsel = enable }));
-}
-
-fn ctrl_byte(opts: struct { ivsel: bool = false, cvt: bool = false }) u8 {
-    // Read-modify-write through the generated type so only IVSEL/CVT change;
-    // they are the two CCP-protected bits (Table 15-3).
-    const CtrlABits = @TypeOf(cpuint.CTRLA.read());
-    var bits: CtrlABits = cpuint.CTRLA.read();
-    bits.IVSEL = @intFromBool(opts.ivsel);
-    bits.CVT = @intFromBool(opts.cvt);
-    return @bitCast(bits);
+    var bits = cpuint.CTRLA.read();
+    bits.IVSEL = @intFromBool(enable);
+    ccp.write_io(addr, @bitCast(bits));
 }
 
 /// True while a level 1 interrupt is being serviced.

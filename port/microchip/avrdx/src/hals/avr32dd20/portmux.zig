@@ -38,6 +38,9 @@ pub const Tcd0 = @TypeOf(portmux.TCDROUTEA.read().TCD0);
 /// PORTMUX.EVSYSROUTEA.EVOUTA.
 pub const EventOutputA = @TypeOf(portmux.EVSYSROUTEA.read().EVOUTA);
 
+/// PORTMUX.EVSYSROUTEA.EVOUTC.
+pub const EventOutputC = @TypeOf(portmux.EVSYSROUTEA.read().EVOUTC);
+
 /// PORTMUX.EVSYSROUTEA.EVOUTD.
 pub const EventOutputD = @TypeOf(portmux.EVSYSROUTEA.read().EVOUTD);
 
@@ -125,6 +128,11 @@ pub fn set_tcd0(route: Tcd0) void {
 /// Route event user EVOUTA onto a pin.
 pub fn set_event_output_a(route: EventOutputA) void {
     portmux.EVSYSROUTEA.modify(.{ .EVOUTA = route });
+}
+
+/// Route event user EVOUTC onto a pin (PC2 on this package; ATDF DEFAULT only).
+pub fn set_event_output_c(route: EventOutputC) void {
+    portmux.EVSYSROUTEA.modify(.{ .EVOUTC = route });
 }
 
 /// Route event user EVOUTD onto a pin.
