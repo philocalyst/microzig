@@ -35,3 +35,7 @@ fn delay_ms(milliseconds: u16) void {
         }
     }
 }
+
+comptime {
+    _ = microzig.export_startup();
+}

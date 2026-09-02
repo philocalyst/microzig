@@ -1,6 +1,6 @@
 .{
     .name = .examples_microchip_avrdx,
-    .fingerprint = 0x2a91c0f74d3b86e5,
+    .fingerprint = 0xf8ba1f6d00a768d8,
     .version = "0.0.0",
     .dependencies = .{
         .microzig = .{ .path = "../../.." },

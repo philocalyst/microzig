@@ -1,18 +1,19 @@
 .{
     .name = .mz_port_microchip_avrdx,
-    .fingerprint = 0x1f4d3c6ab2790e57,
+    .fingerprint = 0xdec2986317af69db,
     .version = "0.0.0",
     .dependencies = .{
         .@"microzig/build-internals" = .{ .path = "../../../build-internals" },
-        // NOTE: atpack.microzig.tech does not currently mirror the AVR-Dx device
-        // family pack, so this points at the Microchip pack server directly.
-        // Once a maintainer uploads it, switch to:
-        //   https://atpack.microzig.tech/Microchip.AVR-Dx_DFP.2.8.343.atpack
-        .atpack = .{
-            .url = "https://packs.download.microchip.com/Microchip.AVR-Dx_DFP.2.8.343.atpack",
-            .hash = "N-V-__8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-            .lazy = true,
-        },
+        // The AVR-Dx device pack is vendored rather than fetched: Microchip's
+        // pack server sends `application/vnd.atmel.atpack`, which the Zig
+        // package fetcher rejects, and the microzig.tech mirror does not carry
+        // this family. vendor/atdf/AVR32DD20.atdf is extracted from
+        // Microchip.AVR-Dx_DFP.2.8.343.atpack
+        //   SHA-256 d81af59072e5ac188431e828461eee5c08e6d5f3ace32461328b4da0ec348746
+        //   size    16,766,508 bytes
+        // and the vendored file itself hashes to
+        //   SHA-256 5b7fc47eed2d281b3c2b6553b2629a8d19195fa62dd9a0288caa92752a8f9d32
+        // scripts/verify_avr32dd20_sources.sh re-derives both hashes.
     },
     .paths = .{
         "README.md",

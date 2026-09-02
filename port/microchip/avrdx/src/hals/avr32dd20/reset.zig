@@ -3,11 +3,13 @@
 //! DS40002413 section 14 "RSTCTRL - Reset Controller", page 120.
 //! https://ww1.microchip.com/downloads/aemDocuments/documents/MCU08/ProductDocuments/DataSheets/AVR32-16DD20-14-Complete-DataSheet-DS40002413.pdf#page=120
 
-const regs = @import("registers.zig");
+const microzig = @import("microzig");
 const ccp = @import("ccp.zig");
 
+const rstctrl = microzig.chip.peripherals.RSTCTRL;
+
 /// Why the device last reset. More than one flag can be set at a time, so this
-/// is a bit set rather than an enum.
+/// is a bit set rather than an enum. Field order mirrors RSTCTRL.RSTFR.
 pub const Flags = packed struct(u8) {
     /// Power-on reset.
     power_on: bool = false,
@@ -28,6 +30,8 @@ pub const Flags = packed struct(u8) {
     }
 };
 
+const RstfrBits = @TypeOf(rstctrl.RSTFR).underlying_type;
+
 /// Read RSTCTRL.RSTFR.
 ///
 /// DS40002413 section 14.5.1 "Reset Flag Register", page 127: the flags are
@@ -36,16 +40,39 @@ pub const Flags = packed struct(u8) {
 /// reading -- otherwise the next boot sees stale bits.
 /// https://ww1.microchip.com/downloads/aemDocuments/documents/MCU08/ProductDocuments/DataSheets/AVR32-16DD20-14-Complete-DataSheet-DS40002413.pdf#page=127
 pub fn flags() Flags {
-    return @bitCast(regs.read(regs.rstctrl.rstfr));
+    return flags_from_bits(rstctrl.RSTFR.read());
+}
+
+fn flags_from_bits(bits: @TypeOf(rstctrl.RSTFR.read())) Flags {
+    return .{
+        .power_on = bits.PORF != 0,
+        .brown_out = bits.BORF != 0,
+        .external = bits.EXTRF != 0,
+        .watchdog = bits.WDRF != 0,
+        .software = bits.SWRF != 0,
+        .updi = bits.UPDIRF != 0,
+    };
+}
+
+fn bits_from_flags(f: Flags) RstfrBits {
+    return .{
+        .PORF = @intFromBool(f.power_on),
+        .BORF = @intFromBool(f.brown_out),
+        .EXTRF = @intFromBool(f.external),
+        .WDRF = @intFromBool(f.watchdog),
+        .SWRF = @intFromBool(f.software),
+        .UPDIRF = @intFromBool(f.updi),
+    };
 }
 
 /// Clear the flags that are set in `mask` (write-one-to-clear).
 pub fn clear_flags(mask: Flags) void {
-    regs.write(regs.rstctrl.rstfr, @bitCast(mask));
+    rstctrl.RSTFR.write(bits_from_flags(mask));
 }
 
+/// Clear every reset source flag in one write.
 pub fn clear_all_flags() void {
-    regs.write(regs.rstctrl.rstfr, 0x3F);
+    clear_flags(.{ .power_on = true, .brown_out = true, .external = true, .watchdog = true, .software = true, .updi = true });
 }
 
 /// Read and clear in one step, which is what most start-up code wants.
@@ -62,6 +89,7 @@ pub fn take_flags() Flags {
 /// returns.
 /// https://ww1.microchip.com/downloads/aemDocuments/documents/MCU08/ProductDocuments/DataSheets/AVR32-16DD20-14-Complete-DataSheet-DS40002413.pdf#page=123
 pub fn request() noreturn {
-    ccp.write_io(regs.rstctrl.swrr, regs.bit(regs.rstctrl.swrst));
+    const addr = comptime @intFromPtr(&rstctrl.SWRR);
+    ccp.write_io(addr, 1);
     unreachable;
 }

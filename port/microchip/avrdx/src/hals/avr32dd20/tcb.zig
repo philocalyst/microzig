@@ -4,52 +4,44 @@
 //! https://ww1.microchip.com/downloads/aemDocuments/documents/MCU08/ProductDocuments/DataSheets/AVR32-16DD20-14-Complete-DataSheet-DS40002413.pdf#page=272
 //!
 //! Both instances are identical, so this module is parameterized by instance
-//! rather than duplicated. `Tcb.tcb0` / `Tcb.tcb1` name them.
+//! rather than duplicated. `Instance(0)` / `instance0` name them.
+//!
+//! Waveform outputs: the ATDF gives TCB0 and TCB1 only their DEFAULT routes,
+//! WO on PA2 and PA3 respectively; there are no PORTMUX alternatives on this
+//! package (the TCBROUTEA bits carry a single defined value each). Enabling
+//! the pin is done with CTRLB.CCMPEN, which is what `Config.enable_output`
+//! sets -- never by writing the route bits, whose non-default values are
+//! reserved.
 
-const regs = @import("registers.zig");
+const microzig = @import("microzig");
 
-/// CTRLA.CLKSEL, bits 3:1.
-pub const ClockSelect = enum(u8) {
-    div1 = 0x0,
-    div2 = 0x1,
-    /// Reuse TCA0's prescaled clock, which keeps the two timers in step.
-    tca0 = 0x2,
-    /// Count edges on the timer's event input instead of a clock.
-    event = 0x7,
-};
+const chip = microzig.chip.peripherals;
+const types = microzig.chip.types.peripherals.TCB;
 
-/// CTRLB.CNTMODE, bits 2:0.
+/// CTRLA.CLKSEL. Encodings re-exported from the generated layer.
+pub const ClockSelect = types.TCB_CLKSEL;
+
+/// CTRLB.CNTMODE. Encodings re-exported from the generated layer.
 ///
 /// DS40002413 section 24.3.3.1 "Modes", page 275.
 /// https://ww1.microchip.com/downloads/aemDocuments/documents/MCU08/ProductDocuments/DataSheets/AVR32-16DD20-14-Complete-DataSheet-DS40002413.pdf#page=275
-pub const CountMode = enum(u8) {
-    /// Count to CCMP, raise CAPT, restart. The plain periodic tick.
-    periodic_interrupt = 0x0,
-    /// Count to CCMP and stop, raising CAPT. A software-armed timeout.
-    periodic_timeout = 0x1,
-    /// Capture CNT into CCMP on the event edge.
-    input_capture = 0x2,
-    /// Measure the period between two identical event edges.
-    frequency_measurement = 0x3,
-    /// Measure the width of an event pulse.
-    pulse_width_measurement = 0x4,
-    /// Both of the above, alternating.
-    frequency_and_pulse_width = 0x5,
-    /// One output pulse per event edge, length set by CCMP.
-    single_shot = 0x6,
-    /// Two 8-bit halves of CCMP become period and duty for an 8-bit PWM.
-    /// Section 24.3.3.1.8, page 280.
-    pwm8 = 0x7,
-};
+pub const CountMode = types.TCB_CNTMODE;
 
+fn instance(comptime id: u1) *volatile types.TCB {
+    return switch (id) {
+        0 => chip.TCB0,
+        1 => chip.TCB1,
+    };
+}
+
+/// One configuration shape for both timers.
 pub const Config = struct {
-    mode: CountMode = .periodic_interrupt,
-    clock: ClockSelect = .div1,
-    /// Compare/capture value. In `pwm8` the low byte is the period and the
+    mode: CountMode = .INT,
+    clock: ClockSelect = .DIV1,
+    /// Compare/capture value. In `PWM8` the low byte is the period and the
     /// high byte the duty cycle.
     compare: u16 = 0,
-    /// CTRLB.CCMPEN: drive the waveform output pin. Route it first with
-    /// `portmux.set_tcb0_output` / `set_tcb1_output`.
+    /// CTRLB.CCMPEN: drive the waveform output pin (TCB0 -> PA2, TCB1 -> PA3).
     enable_output: bool = false,
     /// CTRLB.CCMPINIT: initial level of the output pin.
     output_initial_high: bool = false,
@@ -67,140 +59,142 @@ pub const Config = struct {
     noise_filter: bool = false,
 };
 
-pub const Tcb = struct {
-    base: u16,
+/// Build the typed namespace for TCB0 or TCB1.
+/// The id is checked against this package's timer count at compile time.
+pub fn Instance(comptime id: u1) type {
+    return struct {
+        const t = instance(id);
 
-    /// Waveform output on PA2 (see `portmux.set_tcb0_output`).
-    pub const tcb0: Tcb = .{ .base = regs.tcb0_base };
-    /// Waveform output on PA3 (see `portmux.set_tcb1_output`).
-    pub const tcb1: Tcb = .{ .base = regs.tcb1_base };
+        /// Waveform output pin for this instance (PA2 / PA3).
+        pub const output_pad: u8 = if (id == 0) 2 else 3;
 
-    fn reg(t: Tcb, offset: u16) u16 {
-        return t.base + offset;
-    }
+        /// Configure and start the timer.
+        pub fn configure(config: Config) void {
+            t.CTRLA.write(.{
+                .ENABLE = 0,
+                .CLKSEL = config.clock,
+                .SYNCUPD = 0,
+                .CASCADE = 0,
+                .RUNSTDBY = @intFromBool(config.run_standby),
+            });
 
-    /// Configure and start the timer.
-    pub fn configure(t: Tcb, config: Config) void {
-        regs.write(t.reg(regs.tcb_offsets.ctrla), 0);
+            t.CTRLB.write(.{
+                .CNTMODE = config.mode,
+                .CCMPINIT = @intFromBool(config.output_initial_high),
+                .ASYNC = @intFromBool(config.asynchronous),
+                .CCMPEN = @intFromBool(config.enable_output),
+            });
 
-        var ctrlb: u8 = @intFromEnum(config.mode);
-        if (config.enable_output) ctrlb |= regs.bit(regs.tcb_bits.ccmpen);
-        if (config.output_initial_high) ctrlb |= regs.bit(regs.tcb_bits.ccmpinit);
-        if (config.asynchronous) ctrlb |= regs.bit(regs.tcb_bits.asyncen);
-        regs.write(t.reg(regs.tcb_offsets.ctrlb), ctrlb);
+            t.EVCTRL.write(.{
+                .CAPTEI = @intFromBool(config.enable_event_input),
+                .EDGE = @intFromBool(config.event_falling_edge),
+                .FILTER = @intFromBool(config.noise_filter),
+            });
 
-        var evctrl: u8 = 0;
-        if (config.enable_event_input) evctrl |= regs.bit(0);
-        if (config.event_falling_edge) evctrl |= regs.bit(4);
-        if (config.noise_filter) evctrl |= regs.bit(6);
-        regs.write(t.reg(regs.tcb_offsets.evctrl), evctrl);
+            t.CCMP = config.compare;
 
-        regs.mem16(t.reg(regs.tcb_offsets.ccmp)).* = config.compare;
-
-        var ctrla: u8 = (@as(u8, @intFromEnum(config.clock)) << 1) | regs.bit(regs.tcb_bits.enable);
-        if (config.run_standby) ctrla |= regs.bit(regs.tcb_bits.runstdby);
-        regs.write(t.reg(regs.tcb_offsets.ctrla), ctrla);
-    }
-
-    pub fn start(t: Tcb) void {
-        regs.set_bits(t.reg(regs.tcb_offsets.ctrla), regs.bit(regs.tcb_bits.enable));
-    }
-
-    pub fn stop(t: Tcb) void {
-        regs.clear_bits(t.reg(regs.tcb_offsets.ctrla), regs.bit(regs.tcb_bits.enable));
-    }
-
-    /// True while the counter is actually running. In single-shot mode this
-    /// distinguishes "armed" from "pulsing".
-    pub fn running(t: Tcb) bool {
-        return (regs.read(t.reg(regs.tcb_offsets.status)) & regs.bit(regs.tcb_bits.run)) != 0;
-    }
-
-    pub fn counter(t: Tcb) u16 {
-        return regs.mem16(t.reg(regs.tcb_offsets.cnt)).*;
-    }
-
-    pub fn set_counter(t: Tcb, value: u16) void {
-        regs.mem16(t.reg(regs.tcb_offsets.cnt)).* = value;
-    }
-
-    pub fn compare(t: Tcb) u16 {
-        return regs.mem16(t.reg(regs.tcb_offsets.ccmp)).*;
-    }
-
-    pub fn set_compare(t: Tcb, value: u16) void {
-        regs.mem16(t.reg(regs.tcb_offsets.ccmp)).* = value;
-    }
-
-    /// Set period and duty for `pwm8` mode, where CCMP packs both bytes.
-    pub fn set_pwm8(t: Tcb, period: u8, duty: u8) void {
-        regs.mem16(t.reg(regs.tcb_offsets.ccmp)).* =
-            @as(u16, period) | (@as(u16, duty) << 8);
-    }
-
-    /// Take a captured value and clear CAPT in one step.
-    ///
-    /// DS40002413 section 24.3.3.1.3 "Input Capture on Event Mode", page 276:
-    /// reading CCMP is what releases the capture register for the next event,
-    /// so a handler that only clears the flag will miss captures.
-    /// https://ww1.microchip.com/downloads/aemDocuments/documents/MCU08/ProductDocuments/DataSheets/AVR32-16DD20-14-Complete-DataSheet-DS40002413.pdf#page=276
-    pub fn take_capture(t: Tcb) u16 {
-        const value = regs.mem16(t.reg(regs.tcb_offsets.ccmp)).*;
-        regs.write(t.reg(regs.tcb_offsets.intflags), regs.bit(regs.tcb_bits.capt));
-        return value;
-    }
-
-    pub fn enable_capture_interrupt(t: Tcb) void {
-        regs.set_bits(t.reg(regs.tcb_offsets.intctrl), regs.bit(regs.tcb_bits.capt));
-    }
-
-    pub fn enable_overflow_interrupt(t: Tcb) void {
-        regs.set_bits(t.reg(regs.tcb_offsets.intctrl), regs.bit(regs.tcb_bits.ovf));
-    }
-
-    pub fn disable_interrupts(t: Tcb) void {
-        regs.write(t.reg(regs.tcb_offsets.intctrl), 0);
-    }
-
-    pub fn capture_pending(t: Tcb) bool {
-        return (regs.read(t.reg(regs.tcb_offsets.intflags)) & regs.bit(regs.tcb_bits.capt)) != 0;
-    }
-
-    pub fn clear_capture(t: Tcb) void {
-        regs.write(t.reg(regs.tcb_offsets.intflags), regs.bit(regs.tcb_bits.capt));
-    }
-
-    pub fn overflow_pending(t: Tcb) bool {
-        return (regs.read(t.reg(regs.tcb_offsets.intflags)) & regs.bit(regs.tcb_bits.ovf)) != 0;
-    }
-
-    pub fn clear_overflow(t: Tcb) void {
-        regs.write(t.reg(regs.tcb_offsets.intflags), regs.bit(regs.tcb_bits.ovf));
-    }
-
-    /// Chain TCB1 onto TCB0 for a 32-bit capture.
-    ///
-    /// DS40002413 section 24.3.3.3 "32-Bit Input Capture", page 281: the upper
-    /// timer sets CTRLA.CASCADE and counts the lower timer's overflows. Call
-    /// this on the *upper* instance (TCB1).
-    /// https://ww1.microchip.com/downloads/aemDocuments/documents/MCU08/ProductDocuments/DataSheets/AVR32-16DD20-14-Complete-DataSheet-DS40002413.pdf#page=281
-    pub fn set_cascade(t: Tcb, enable: bool) void {
-        const address = t.reg(regs.tcb_offsets.ctrla);
-        if (enable) {
-            regs.set_bits(address, regs.bit(regs.tcb_bits.cascade));
-        } else {
-            regs.clear_bits(address, regs.bit(regs.tcb_bits.cascade));
+            t.CTRLA.modify(.{ .ENABLE = 1 });
         }
-    }
 
-    /// CTRLA.SYNCUPD: restart this timer whenever TCA0 restarts, so a TCB PWM
-    /// stays phase-locked to the TCA one.
-    pub fn set_sync_update(t: Tcb, enable: bool) void {
-        const address = t.reg(regs.tcb_offsets.ctrla);
-        if (enable) {
-            regs.set_bits(address, regs.bit(regs.tcb_bits.synupd));
-        } else {
-            regs.clear_bits(address, regs.bit(regs.tcb_bits.synupd));
+        pub fn start() void {
+            t.CTRLA.modify(.{ .ENABLE = 1 });
         }
-    }
-};
+
+        pub fn stop() void {
+            t.CTRLA.modify(.{ .ENABLE = 0 });
+        }
+
+        /// True while the counter is actually running. In single-shot mode
+        /// this distinguishes "armed" from "pulsing".
+        pub fn running() bool {
+            return t.STATUS.read().RUN != 0;
+        }
+
+        pub fn counter() u16 {
+            return t.CNT;
+        }
+
+        pub fn set_counter(value: u16) void {
+            t.CNT = value;
+        }
+
+        pub fn compare() u16 {
+            return t.CCMP;
+        }
+
+        pub fn set_compare(value: u16) void {
+            t.CCMP = value;
+        }
+
+        /// Set period and duty for `PWM8` mode, where CCMP packs both bytes.
+        pub fn set_pwm8(period: u8, duty: u8) void {
+            t.CCMP = @as(u16, period) | (@as(u16, duty) << 8);
+        }
+
+        /// Take a captured value and clear CAPT in one step.
+        ///
+        /// DS40002413 section 24.3.3.1.3 "Input Capture on Event Mode", page
+        /// 276: reading CCMP is what releases the capture register for the
+        /// next event, so a handler that only clears the flag will miss
+        /// captures.
+        /// https://ww1.microchip.com/downloads/aemDocuments/documents/MCU08/ProductDocuments/DataSheets/AVR32-16DD20-14-Complete-DataSheet-DS40002413.pdf#page=276
+        pub fn take_capture() u16 {
+            const value = t.CCMP;
+            t.INTFLAGS.write(.{ .CAPT = 1, .OVF = 0 });
+            return value;
+        }
+
+        pub fn enable_capture_interrupt() void {
+            t.INTCTRL.modify(.{ .CAPT = 1 });
+        }
+
+        pub fn enable_overflow_interrupt() void {
+            t.INTCTRL.modify(.{ .OVF = 1 });
+        }
+
+        pub fn disable_interrupts() void {
+            t.INTCTRL.write(.{ .CAPT = 0, .OVF = 0 });
+        }
+
+        pub fn capture_pending() bool {
+            return t.INTFLAGS.read().CAPT != 0;
+        }
+
+        pub fn clear_capture() void {
+            t.INTFLAGS.write(.{ .CAPT = 1, .OVF = 0 });
+        }
+
+        pub fn overflow_pending() bool {
+            return t.INTFLAGS.read().OVF != 0;
+        }
+
+        pub fn clear_overflow() void {
+            t.INTFLAGS.write(.{ .CAPT = 0, .OVF = 1 });
+        }
+
+        /// Chain this timer onto the lower one for a 32-bit capture.
+        ///
+        /// DS40002413 section 24.3.3.3 "32-Bit Input Capture", page 281: the
+        /// upper timer sets CTRLA.CASCADE and counts the lower timer's
+        /// overflows. Call this on the *upper* instance (TCB1), with both on
+        /// the same clock and the lower one in `TIMEOUT` mode per the
+        /// datasheet's cascade recipe.
+        /// https://ww1.microchip.com/downloads/aemDocuments/documents/MCU08/ProductDocuments/DataSheets/AVR32-16DD20-14-Complete-DataSheet-DS40002413.pdf#page=281
+        pub fn set_cascade(enable: bool) void {
+            comptime if (id != 1)
+                @compileError("cascade makes only the upper timer (TCB1) count lower-timer overflows");
+            t.CTRLA.modify(.{ .CASCADE = @intFromBool(enable) });
+        }
+
+        /// CTRLA.SYNCUPD: restart this timer whenever TCA0 restarts, so a TCB
+        /// PWM stays phase-locked to the TCA one.
+        pub fn set_sync_update(enable: bool) void {
+            t.CTRLA.modify(.{ .SYNCUPD = @intFromBool(enable) });
+        }
+    };
+}
+
+/// The TCB0 driver instance.
+pub const instance0 = Instance(0);
+/// The TCB1 driver instance.
+pub const instance1 = Instance(1);

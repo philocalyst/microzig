@@ -6,31 +6,37 @@
 //! https://ww1.microchip.com/downloads/aemDocuments/documents/MCU08/ProductDocuments/DataSheets/AVR32-16DD20-14-Complete-DataSheet-DS40002413.pdf#page=74
 
 const std = @import("std");
-const regs = @import("registers.zig");
+const microzig = @import("microzig");
+const capabilities = @import("capabilities.zig");
 
-/// Static facts about this part, from the AVR32DD20 ATDF.
+const chip = microzig.chip.peripherals;
+
+/// Static facts about this part. Geometry and frequency limits live in
+/// `capabilities.zig`; see that file for why the CPU is rated 24 MHz even
+/// though the ATDF variant carries speedmax="32000000".
 pub const info = struct {
-    pub const name = "AVR32DD20";
-    pub const flash_size = regs.memory.flash_size;
-    pub const flash_page_size = regs.memory.flash_page_size;
-    pub const sram_size = regs.memory.sram_size;
-    pub const eeprom_size = regs.memory.eeprom_size;
-    pub const user_row_size = regs.memory.user_row_size;
-    /// Maximum rated CPU frequency, from the ATDF variant `speedmax`.
-    pub const max_frequency_hz = 32_000_000;
-    pub const vcc_min_mv = 1800;
-    pub const vcc_max_mv = 5500;
+    pub const name = capabilities.name;
+    pub const flash_size = capabilities.flash_size;
+    pub const flash_page_size = capabilities.flash_page_size;
+    pub const sram_size = capabilities.sram_size;
+    pub const eeprom_size = capabilities.eeprom_size;
+    pub const user_row_size = capabilities.user_row_size;
+    /// Maximum rated CLK_MAIN/CPU frequency.
+    pub const max_frequency_hz = capabilities.max_frequency_hz;
+    pub const vcc_min_mv = capabilities.vcc_min_mv;
+    pub const vcc_max_mv = capabilities.vcc_max_mv;
     /// The 20-pin package bonds 17 I/O pads: PA0-PA7, PC1-PC3, PD4-PD7,
-    /// PF6-PF7.
-    pub const io_pin_count = 17;
+    /// PF6-PF7; 16 of them can drive.
+    pub const io_pin_count = capabilities.Port.count_bonded;
+    pub const output_pin_count = capabilities.Port.count_output_capable;
 };
 
 /// The three-byte device ID from the signature row.
 pub fn device_id() [3]u8 {
     return .{
-        regs.read(regs.sigrow.deviceid0),
-        regs.read(regs.sigrow.deviceid1),
-        regs.read(regs.sigrow.deviceid2),
+        chip.SIGROW.DEVICEID0,
+        chip.SIGROW.DEVICEID1,
+        chip.SIGROW.DEVICEID2,
     };
 }
 
@@ -40,21 +46,34 @@ pub fn device_id() [3]u8 {
 /// variant: the parts are pin-compatible, so the wrong binary flashes happily
 /// and then misbehaves only when it runs off the end of a smaller flash.
 pub fn is_expected_device() bool {
-    return std.mem.eql(u8, &device_id(), &regs.sigrow.expected_device_id);
+    return std.mem.eql(u8, &device_id(), &capabilities.expected_device_id);
 }
 
 /// The 16-byte factory serial number.
-pub fn serial_number() [regs.sigrow.sernum_len]u8 {
-    var out: [regs.sigrow.sernum_len]u8 = undefined;
-    for (&out, 0..) |*byte, i| {
-        byte.* = regs.read(regs.sigrow.sernum0 + @as(u16, @intCast(i)));
-    }
-    return out;
+pub fn serial_number() [16]u8 {
+    return .{
+        chip.SIGROW.SERNUM0,
+        chip.SIGROW.SERNUM1,
+        chip.SIGROW.SERNUM2,
+        chip.SIGROW.SERNUM3,
+        chip.SIGROW.SERNUM4,
+        chip.SIGROW.SERNUM5,
+        chip.SIGROW.SERNUM6,
+        chip.SIGROW.SERNUM7,
+        chip.SIGROW.SERNUM8,
+        chip.SIGROW.SERNUM9,
+        chip.SIGROW.SERNUM10,
+        chip.SIGROW.SERNUM11,
+        chip.SIGROW.SERNUM12,
+        chip.SIGROW.SERNUM13,
+        chip.SIGROW.SERNUM14,
+        chip.SIGROW.SERNUM15,
+    };
 }
 
 /// Silicon revision, as it appears in SYSCFG.REVID. 0 is rev A.
 pub fn revision() u8 {
-    return regs.read(regs.syscfg.revid);
+    return chip.SYSCFG.REVID;
 }
 
 /// Revision as the letter Microchip prints on the package.
@@ -67,36 +86,36 @@ pub fn revision_letter() u8 {
 /// Fuse values as programmed. These are read-only from the running
 /// application; changing them requires a programmer.
 ///
-/// DS40002413 section 8 "Fuses (FUSE)". The AVR32DD20 layout is transcribed
-/// from the ATDF FUSE register group.
+/// DS40002413 section 8 "Fuses (FUSE)". Layout comes from the generated FUSE
+/// peripheral (ATDF FUSE register group).
 pub const fuses = struct {
     pub fn watchdog_config() u8 {
-        return regs.read(regs.fuse.wdtcfg);
+        return chip.FUSE.WDTCFG.raw;
     }
 
     pub fn bod_config() u8 {
-        return regs.read(regs.fuse.bodcfg);
+        return chip.FUSE.BODCFG.raw;
     }
 
     pub fn oscillator_config() u8 {
-        return regs.read(regs.fuse.osccfg);
+        return chip.FUSE.OSCCFG.raw;
     }
 
     pub fn system_config0() u8 {
-        return regs.read(regs.fuse.syscfg0);
+        return chip.FUSE.SYSCFG0.raw;
     }
 
     pub fn system_config1() u8 {
-        return regs.read(regs.fuse.syscfg1);
+        return chip.FUSE.SYSCFG1.raw;
     }
 
     /// FUSE.SYSCFG0.EESAVE - whether a chip erase preserves the EEPROM.
     pub fn eeprom_preserved_on_erase() bool {
-        return (system_config0() & 0x01) != 0;
+        return chip.FUSE.SYSCFG0.read().EESAVE != 0;
     }
 
     /// FUSE.SYSCFG0.RSTPINCFG - what PF6 is wired to do.
-    pub const ResetPinMode = enum(u8) {
+    pub const ResetPinMode = enum(u1) {
         /// PF6 is an ordinary GPIO; only an HV pulse or UPDI can reset.
         gpio = 0x0,
         /// PF6 is the RESET input.
@@ -104,28 +123,39 @@ pub const fuses = struct {
     };
 
     pub fn reset_pin_mode() ResetPinMode {
-        return @enumFromInt((system_config0() & 0x08) >> 3);
+        return @fromBackingInt(@intCast(chip.FUSE.SYSCFG0.read().RSTPINCFG));
     }
 
     /// FUSE.SYSCFG0.UPDIPINCFG - whether PF7 is still the UPDI programming
     /// pin. Clearing this frees PF7 as a GPIO but makes the part reachable
     /// only via a high-voltage UPDI entry sequence.
     pub fn updi_pin_enabled() bool {
-        return (system_config0() & 0x10) != 0;
+        return chip.FUSE.SYSCFG0.read().UPDIPINCFG != 0;
+    }
+
+    /// FUSE.SYSCFG1.MVSYSCFG - how MVIO is wired.
+    pub const MvioSystemConfig = enum(u2) {
+        dual_supply = 0x1,
+        single_supply = 0x2,
+        _,
+    };
+
+    pub fn mvio_system_config() MvioSystemConfig {
+        return @fromBackingInt(@intCast(chip.FUSE.SYSCFG1.read().MVSYSCFG));
     }
 
     /// FUSE.SYSCFG1.SUT - the start-up delay after reset.
     pub fn startup_time() u3 {
-        return @truncate(system_config1() & 0x07);
+        return @backingInt(chip.FUSE.SYSCFG1.read().SUT);
     }
 
     /// The flash section sizes, in units of the boot/code size granularity.
     pub fn code_size() u8 {
-        return regs.read(regs.fuse.codesize);
+        return chip.FUSE.CODESIZE;
     }
 
     pub fn boot_size() u8 {
-        return regs.read(regs.fuse.bootsize);
+        return chip.FUSE.BOOTSIZE;
     }
 };
 
@@ -140,15 +170,21 @@ pub const fuses = struct {
 pub const gpr = struct {
     pub const Index = enum(u2) { gpr0, gpr1, gpr2, gpr3 };
 
-    fn address(index: Index) u16 {
-        return regs.gpr.gpr0 + @as(u16, @intFromEnum(index));
-    }
-
     pub fn read(index: Index) u8 {
-        return regs.read(address(index));
+        return switch (index) {
+            .gpr0 => chip.GPR.GPR0,
+            .gpr1 => chip.GPR.GPR1,
+            .gpr2 => chip.GPR.GPR2,
+            .gpr3 => chip.GPR.GPR3,
+        };
     }
 
     pub fn write(index: Index, value: u8) void {
-        regs.write(address(index), value);
+        switch (index) {
+            .gpr0 => chip.GPR.GPR0 = value,
+            .gpr1 => chip.GPR.GPR1 = value,
+            .gpr2 => chip.GPR.GPR2 = value,
+            .gpr3 => chip.GPR.GPR3 = value,
+        }
     }
 };

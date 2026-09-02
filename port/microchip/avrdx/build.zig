@@ -12,8 +12,6 @@ boards: struct {},
 pub fn init(dep: *std.Build.Dependency) ?Self {
     const b = dep.builder;
 
-    const atpack = b.lazyDependency("atpack", .{}) orelse return null;
-
     // AVR Dx parts map the low 32 KiB of flash into the data space and have no
     // RAMPZ, which is exactly what LLVM's avrxmega3 subtarget describes. The
     // device pack agrees: its objects for this part ship under gcc/dev/avr32dd20/avrxmega3/.
@@ -36,8 +34,12 @@ pub fn init(dep: *std.Build.Dependency) ?Self {
         .chip = .{
             .name = "AVR32DD20",
             .url = "https://www.microchip.com/en-us/product/AVR32DD20",
+            // regz output generated from vendor/atdf/AVR32DD20.atdf (see
+            // scripts/regenerate_avr32dd20_chip.sh). Checked in so firmware
+            // builds do not depend on the regz toolchain, and so the file can
+            // be diffed against the ATDF in review.
             .register_definition = .{
-                .atdf = atpack.path("atdf/AVR32DD20.atdf"),
+                .zig = dep.path("src/chip/AVR32DD20.zig"),
             },
             .memory_regions = &.{
                 .{ .tag = .flash, .offset = 0x000000, .length = 32 * 1024, .access = .rx },
@@ -48,6 +50,10 @@ pub fn init(dep: *std.Build.Dependency) ?Self {
             .root_source_file = b.path("src/hals/AVR32DD20.zig"),
         },
         .bundle_compiler_rt = false,
+        // ubsan_rt does not support AVR; bundling it also drags std.fmt float
+        // printing into every image, which does not compile for u16-sized
+        // usize targets.
+        .bundle_ubsan_rt = false,
     };
 
     return .{
@@ -59,5 +65,15 @@ pub fn init(dep: *std.Build.Dependency) ?Self {
 }
 
 pub fn build(b: *std.Build) void {
-    _ = b.step("test", "Run platform agnostic unit tests");
+    // Host-side tests for the calculation-heavy parts of the HAL. Register
+    // behaviour itself can only be checked on hardware or in simulation.
+    const tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/hals/avr32dd20/tests.zig"),
+            .target = b.graph.host,
+        }),
+    });
+    const run_tests = b.addRunArtifact(tests);
+    const test_step = b.step("test", "Run platform agnostic unit tests");
+    test_step.dependOn(&run_tests.step);
 }

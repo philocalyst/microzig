@@ -1,0 +1,78 @@
+// Machine-readable provenance for every external source of truth used by the
+// AVR32DD20 port. scripts/verify_avr32dd20_sources.sh re-derives the hashes
+// here; CI runs it on a schedule so a silently re-published pack is caught.
+//
+// The .zon syntax is only loosely validated by Zig, but keeping this data next
+// to build.zig.zon makes it greppable with the same tooling as package
+// metadata.
+
+.{
+    // The authoritative electrical/behavioural document.
+    .datasheet = .{
+        .document = "DS40002413B",
+        .title = "AVR32/16DD14/20 Complete Data Sheet",
+        // Canonical PDF URL (Microchip document server).
+        .pdf = "https://ww1.microchip.com/downloads/aemDocuments/documents/MCU08/ProductDocuments/DataSheets/AVR32-16DD20-14-Complete-DataSheet-DS40002413.pdf",
+        // A local copy lives at ~/Downloads under the same basename.
+    },
+
+    // The register/packaging description, machine-read.
+    .dfp = .{
+        .package = "Microchip.AVR-Dx_DFP",
+        .version = "2.8.343",
+        .url = "https://packs.download.microchip.com/Microchip.AVR-Dx_DFP.2.8.343.atpack",
+        .content_type = "application/vnd.atmel.atpack",
+        // Zig's package fetcher rejects the MIME type above (see
+        // lib/compiler/Maker/Fetch.zig: only tar/gzip/xz/zst/zip and
+        // application/octet-stream are accepted), so the pack cannot be a
+        // build.zig.zon dependency. The needed file is vendored instead.
+        .size_bytes = 16766508,
+        .sha256 = "d81af59072e5ac188431e828461eee5c08e6d5f3ace32461328b4da0ec348746",
+    },
+
+    // Vendored extraction of the DFP; byte-identical to the entry inside the
+    // verified pack.
+    .atdf = .{
+        .path = "port/microchip/avrdx/vendor/atdf/AVR32DD20.atdf",
+        .source_in_pack = "atdf/AVR32DD20.atdf",
+        .sha256 = "5b7fc47eed2d281b3c2b6553b2629a8d19195fa62dd9a0288caa92752a8f9d32",
+    },
+
+    // regz output committed into the tree.
+    .generated_chip = .{
+        .path = "port/microchip/avrdx/src/chip/AVR32DD20.zig",
+        .generator = "tools/regz --format atdf --device AVR32DD20",
+        .regenerate_script = "scripts/regenerate_avr32dd20_chip.sh",
+    },
+
+    // Online manual sections cited from code, keyed by stable citation id.
+    // GUID URLs are permanent Microchip oxy-doc links; titles are validated by
+    // scripts/check_avr32dd20_citations.sh which rejects bare #page= anchors.
+    .citations = .{
+        .peripheral_overview = .{
+            .guid_url = "https://onlinedocs.microchip.com/oxy/GUID-417F9387-DF9B-42E5-AA91-108A8C58208B-en-US-8/GUID-F94E51A5-03D0-474D-820B-5DF1CA77A1BD.html",
+            .pdf_section = "DS40002413 section 1",
+            .fact = "TWI supports simultaneous host and client operation; 20-pin package pin set.",
+        },
+        .io_multiplexing = .{
+            .guid_url = "https://onlinedocs.microchip.com/oxy/GUID-417F9387-DF9B-42E5-AA91-108A8C58208B-en-US-8/GUID-B9F43120-9DEE-4F24-B16A-0750854F7903.html",
+            .pdf_section = "DS40002413 section 7.3.1 I/O Multiplexing",
+            .fact = "PORTMUX route tables; PF6 input-only when RSTPINCFG=RESET.",
+        },
+        .adc_accumulation = .{
+            .guid_url = "https://onlinedocs.microchip.com/oxy/GUID-417F9387-DF9B-42E5-AA91-108A8C58208B-en-US-8/GUID-D7770493-3174-4393-AC15-558028DF8C0E.html",
+            .pdf_section = "DS40002413 section 33.3.3.7 Accumulating Results",
+            .fact = "Hardware truncates result LSBs above 16 samples; software must rescale.",
+        },
+    },
+
+    // Compiler used to verify every gate in plan.md. minimum_zig_version in
+    // build.zig.zon files is 0.17.0-dev.1471+ff10b90bc; the exact .1471
+    // tarball has been purged from ziglang.org, so the newest published master
+    // at verification time is pinned instead.
+    .toolchain = .{
+        .zig_version = "0.17.0-dev.1857+3c46da14d",
+        .tarball = "https://ziglang.org/builds/zig-aarch64-macos-0.17.0-dev.1857+3c46da14d.tar.xz",
+        .sha256 = "7f8b084a7fd776a93bb45df36ee966402d260c955f2ea567ba7bde6f38e94ad1",
+    },
+}

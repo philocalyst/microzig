@@ -213,3 +213,31 @@ pub const xmega128a4u = Config{
     .io_window_base = 0x0000,
     .io_window_end = 0x0FFF,
 };
+
+/// AVR32DD20 configuration (AVR-Dx series, avrxmega3)
+///
+/// Data space: [I/O 0x0000-0x0FFF][SRAM 0x7000-0x7FFF]
+/// Flash is also aliased into data space at 0x8000 on real silicon (avrxmega3),
+/// but programs using LPM do not need that mapping emulated here.
+pub const avr32dd20 = Config{
+    .name = "AVR32DD20",
+    .flash_size = 32768, // 32 KiB
+    .sram_size = 4096, // 4 KiB
+    .sram_base = 0x7000,
+    .eeprom_size = 256,
+    .code_model = .code16,
+    .instruction_set = .avrxmega,
+    .special_io = .{
+        .ramp_x = null,
+        .ramp_y = null,
+        .ramp_z = null,
+        .ramp_d = null,
+        .e_ind = null,
+        // aviron's debug device models SP/SREG at these fixed addresses.
+        .sp_l = 0x3D,
+        .sp_h = 0x3E,
+        .sreg = 0x3F,
+    },
+    .io_window_base = 0x0000,
+    .io_window_end = 0x0FFF,
+};

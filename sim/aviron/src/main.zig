@@ -89,24 +89,24 @@ fn run_with_mcu(
 
                 var pheaders = header.iterateProgramHeaders(&reader);
                 while (try pheaders.next()) |phdr| {
-                    if (phdr.p_type != std.elf.PT_LOAD)
+                    if (phdr.type != .LOAD)
                         continue; // Header isn't loaded
 
-                    if (phdr.p_memsz == 0)
+                    if (phdr.memsz == 0)
                         continue; // Empty segment, nothing to load
 
                     // Use vaddr to determine if this is data or code
                     // AVR uses 0x800000 flag in vaddr to indicate data memory
-                    const is_data = phdr.p_vaddr >= 0x0080_0000;
-                    const target_addr: u24 = @intCast(phdr.p_vaddr & 0x007F_FFFF);
+                    const is_data = phdr.vaddr >= 0x0080_0000;
+                    const target_addr: u24 = @intCast(phdr.vaddr & 0x007F_FFFF);
 
-                    try reader.seekTo(phdr.p_offset);
+                    try reader.seekTo(phdr.offset);
 
                     if (is_data) {
                         // Load data segment via Bus interface
                         // Use a stack buffer to read and write through the bus
                         var read_buf: [256]u8 = undefined;
-                        var remaining = phdr.p_filesz;
+                        var remaining = phdr.filesz;
                         var offset: usize = 0;
                         while (remaining > 0) {
                             const to_read = @min(remaining, read_buf.len);
@@ -119,14 +119,14 @@ fn run_with_mcu(
                         }
 
                         // Zero-fill the remaining memory
-                        var i: usize = phdr.p_filesz;
-                        while (i < phdr.p_memsz) : (i += 1) {
+                        var i: usize = phdr.filesz;
+                        while (i < phdr.memsz) : (i += 1) {
                             try data_bus.write(@intCast(target_addr + i), 0);
                         }
                     } else {
                         // Flash can be loaded directly
-                        try reader.interface.readSliceAll(flash_storage.data[target_addr..][0..phdr.p_filesz]);
-                        @memset(flash_storage.data[target_addr + phdr.p_filesz ..][0 .. phdr.p_memsz - phdr.p_filesz], 0);
+                        try reader.interface.readSliceAll(flash_storage.data[target_addr..][0..phdr.filesz]);
+                        @memset(flash_storage.data[target_addr + phdr.filesz ..][0 .. phdr.memsz - phdr.filesz], 0);
                     }
                 }
             },
@@ -217,6 +217,7 @@ pub fn main(init: std.process.Init) !u8 {
         .attiny816 => try run_with_mcu(gpa, io, aviron.mcu.attiny816, positionals, options),
         .atmega2560 => try run_with_mcu(gpa, io, aviron.mcu.atmega2560, positionals, options),
         .xmega128a4u => try run_with_mcu(gpa, io, aviron.mcu.xmega128a4u, positionals, options),
+        .avr32dd20 => try run_with_mcu(gpa, io, aviron.mcu.avr32dd20, positionals, options),
     };
 }
 
@@ -226,6 +227,7 @@ pub const MCU = enum {
     attiny816,
     atmega2560,
     xmega128a4u,
+    avr32dd20,
 };
 
 pub const FileFormat = enum {

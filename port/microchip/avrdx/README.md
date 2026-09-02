@@ -69,16 +69,27 @@ and therefore checkable.
 
 ## Device pack
 
-`build.zig.zon` fetches `Microchip.AVR-Dx_DFP` from Microchip's pack server
-directly, because <https://atpack.microzig.tech> does not currently mirror it.
-If a maintainer uploads the pack, switch the URL to
-`https://atpack.microzig.tech/Microchip.AVR-Dx_DFP.2.8.343.atpack` and keep the
-hash.
+The pack is **vendored, not fetched**: `vendor/atdf/AVR32DD20.atdf` is extracted
+from `Microchip.AVR-Dx_DFP.2.8.343.atpack`
+(sha256 `d81af59072e5ac188431e828461eee5c08e6d5f3ace32461328b4da0ec348746`,
+16,766,508 bytes). It cannot be a `build.zig.zon` dependency because
+Microchip's server sends `Content-Type: application/vnd.atmel.atpack`, which
+the Zig package fetcher rejects, and the microzig.tech mirror does not carry
+this family.
 
-> **The `.hash` in `build.zig.zon` is a placeholder.** It could not be computed
-> where this package was written. Run
-> `zig fetch --save=atpack https://packs.download.microchip.com/Microchip.AVR-Dx_DFP.2.8.343.atpack`
-> in this directory, or take the expected hash out of the first build error.
+Provenance (pack URL, hashes, citation GUIDs, toolchain) lives in
+[`docs/avr32dd20-sources.zon`](docs/avr32dd20-sources.zon).
+Re-verify against Microchip any time:
+
+```
+./scripts/verify_avr32dd20_sources.sh            # offline: vendored file hash
+WITH_PACK=1 ./scripts/verify_avr32dd20_sources.sh  # downloads the pack and checks it
+./scripts/check_avr32dd20_citations.sh           # ONLINE=1 also fetches GUID URLs
+```
+
+The generated register layer (`src/chip/`) is regz output of the vendored
+ATDF; regenerate with `scripts/regenerate_avr32dd20_chip.sh` after a pack
+update and review the diff.
 
 ## Known gaps
 
@@ -105,18 +116,16 @@ store the hardware would have discarded.
 
 ## Verification status
 
-Every declaration in the HAL, and every example, passes full semantic analysis
-for `avr-freestanding-eabi` / `avrxmega3`. Linking was not attempted: the Zig
-0.16 + LLVM 21 toolchain used here fails AVR codegen even for a four-line
-program (`error: Alias and aliasee types don't match`), so that gap is the
-toolchain's, not this package's. Register addresses, bit positions and enum
-encodings were transcribed from the ATDF and re-checked against it; timing and
-electrical behaviour have not been observed on silicon.
+All five examples link and emit ELF + Intel HEX for
+`avr-freestanding-eabi` / `avrxmega3` in `ReleaseSmall` on the pinned Zig
+(`0.17.0-dev.1857+3c46da14d`, see the sources manifest). Register addresses,
+bit positions and enum encodings come from regz output of the vendored ATDF
+rather than hand transcription. Timing and electrical behaviour have not been
+observed on silicon.
 
 ## FYI: LLVM issues
 
-LLVM has trouble lowering AVR in debug mode. Build in release small:
-
-```
-zig build -Doptimize=ReleaseSmall
-```
+Current Zig master's LLVM crashes in Debug mode while emitting AVR code, and
+the generic `std.Io.Writer.print` machinery hits an "Invalid integer const
+record" bitcode bug in ReleaseSmall. Build examples in release small; the HAL
+avoids float printing entirely.

@@ -18,6 +18,7 @@ jobs:
       uses: actions/checkout@v7
     - name: Setup Zig
       uses: mlugg/setup-zig@v2
+      version: 0.17.0-dev.1857+3c46da14d
 
     - name: espressif/esp
       run: zig build test
@@ -34,6 +35,10 @@ jobs:
     - name: microchip/attiny
       run: zig build test
       working-directory: port/microchip/attiny
+
+    - name: microchip/avrdx
+      run: zig build test
+      working-directory: port/microchip/avrdx
 
     - name: microchip/samd51
       run: zig build test
@@ -86,6 +91,7 @@ jobs:
       uses: actions/checkout@v7
     - name: Setup Zig
       uses: mlugg/setup-zig@v2
+      version: 0.17.0-dev.1857+3c46da14d
 
     - name: espressif/esp
       run: zig build -Doptimize=ReleaseSmall
@@ -102,6 +108,10 @@ jobs:
     - name: microchip/attiny
       run: zig build -Doptimize=ReleaseSmall
       working-directory: examples/microchip/attiny
+
+    - name: microchip/avrdx
+      run: zig build -Doptimize=ReleaseSmall
+      working-directory: examples/microchip/avrdx
 
     - name: microchip/samd51
       run: zig build -Doptimize=ReleaseSmall
@@ -147,3 +157,20 @@ jobs:
       run: zig build -Doptimize=ReleaseSmall
       working-directory: examples/no_hal/stm32_l031
 
+
+  avr32dd20-sources:
+    name: "AVR32DD20 source provenance"
+    runs-on: ubuntu-latest
+    schedule:
+      # Weekly; Microchip availability must never break normal builds.
+      - cron: "17 6 * * 1"
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Verify vendored ATDF against pinned hash
+        run: ./scripts/verify_avr32dd20_sources.sh
+      - name: Verify pack from Microchip (download + hash + extraction)
+        run: WITH_PACK=1 ./scripts/verify_avr32dd20_sources.sh
+      - name: Live citation URL validation
+        run: ONLINE=1 ./scripts/check_avr32dd20_citations.sh

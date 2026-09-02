@@ -10,7 +10,8 @@ const hal = microzig.hal;
 const led = hal.gpio.pins.pa7;
 
 /// Where in EEPROM the wake counter lives.
-const counter_address = hal.eeprom.Address.from_int(0);
+// from_int is range-checked; the EEPROM starts at 0.
+const counter_address = hal.eeprom.Address.from_int(0).?;
 
 pub fn main() void {
     hal.clock.set_internal_frequency(.mhz4, .{});
@@ -18,12 +19,12 @@ pub fn main() void {
 
     // Unused pads keep their input buffers powered unless told otherwise,
     // which matters once the CPU is asleep.
-    hal.gpio.disable_unbonded_inputs();
+    hal.gpio.disable_unused_inputs(.{});
     hal.gpio.configure_output(led, false);
 
     // 32.768 kHz internal oscillator, divided by 32768 -> one tick per second.
-    hal.rtc.set_clock_source(.osc32k);
-    hal.rtc.pit.configure(.cycles32768, true);
+    hal.rtc.set_clock_source(.OSC32K);
+    hal.rtc.pit.configure(.CYC32768, true);
 
     hal.cpuint.enable_interrupts();
 
@@ -46,10 +47,15 @@ pub fn main() void {
 /// `main` once SLEEP returns.
 pub const microzig_options: microzig.Options = .{
     .interrupts = .{
-        .RTC_PIT = &rtc_pit_interrupt,
+        // HandlerFn is a tagged union so the calling convention is explicit.
+        .RTC_PIT = .{ .signal = &rtc_pit_interrupt },
     },
 };
 
 fn rtc_pit_interrupt() callconv(.avr_signal) void {
     hal.rtc.pit.clear_interrupt();
+}
+
+comptime {
+    _ = microzig.export_startup();
 }

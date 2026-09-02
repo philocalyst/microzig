@@ -34,24 +34,40 @@ pub const utilities = @import("utilities.zig");
 pub const Allocator = @import("allocator.zig");
 
 /// The microzig default panic handler. Will disable interrupts and loop endlessly.
-pub const panic = std.debug.FullPanic(struct {
-    pub fn panic_fn(message: []const u8, first_trace_address: ?usize) noreturn {
-        std.log.err("panic: {s}", .{message});
-        _ = first_trace_address;
-
-        // TODO: we no longer have StackIterator available to us, so we need to
-        // create our own.
-
-        // Attach a breakpoint. this might trigger another panic internally, so
-        // only do that if requested.
-        if (options.breakpoint_in_panic) {
-            std.log.info("triggering breakpoint...", .{});
-            @breakpoint();
+///
+/// Architectures without console plumbing (AVR) take a minimal variant: the
+/// formatting machinery behind `std.log` does not link there, so panics keep
+/// only the essential hang behavior instead of dragging every port's
+/// diagnostics down with them.
+pub const panic = blk: {
+    const Impl = struct {
+        fn panicMinimal(message: []const u8, first_trace_address: ?usize) noreturn {
+            _ = message;
+            _ = first_trace_address;
+            hang();
         }
 
-        hang();
-    }
-}.panic_fn);
+        fn panicFull(message: []const u8, first_trace_address: ?usize) noreturn {
+            std.log.err("panic: {s}", .{message});
+            _ = first_trace_address;
+
+            // Attach a breakpoint. this might trigger another panic internally, so
+            // only do that if requested.
+            if (options.breakpoint_in_panic) {
+                std.log.info("triggering breakpoint...", .{});
+                @breakpoint();
+            }
+
+            hang();
+        }
+    };
+
+    const builtin = @import("builtin");
+    break :blk std.debug.FullPanic(if (builtin.cpu.arch == .avr)
+        Impl.panicMinimal
+    else
+        Impl.panicFull);
+};
 
 pub const InterruptOptions = if (@hasDecl(cpu, "InterruptOptions")) cpu.InterruptOptions else struct {};
 
@@ -151,7 +167,13 @@ fn microzig_main() callconv(.c) noreturn {
         main() catch |err| {
             const msg_base = "main() returned error.";
 
-            if (!options.simple_panic_if_main_errors) {
+            // The error-name path needs std.fmt, which does not link on AVR;
+            // there (and when explicitly requested) panic with a fixed
+            // string instead of printing the error name.
+            const builtin = @import("builtin");
+            if (builtin.cpu.arch == .avr or options.simple_panic_if_main_errors) {
+                @panic(msg_base);
+            } else {
                 const max_error_size = comptime blk: {
                     var max: usize = 0;
                     const error_set = @typeInfo(return_type).error_union.error_set;
@@ -167,8 +189,6 @@ fn microzig_main() callconv(.c) noreturn {
                 var buf: [msg_base.len + max_error_size]u8 = undefined;
                 const msg = std.fmt.bufPrint(&buf, "{s}{s}", .{ msg_base, @errorName(err) }) catch @panic(msg_base);
                 @panic(msg);
-            } else {
-                @panic(msg_base);
             }
         };
     } else {

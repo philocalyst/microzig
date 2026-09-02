@@ -48,29 +48,75 @@
 //! page 206) is unprotected even though two bits of BOD.CTRLA are. The ADC
 //! chapter states the case outright -- section 33.3.10 is "Not applicable".
 
-const regs = @import("registers.zig");
+const microzig = @import("microzig");
 
-/// Write a CCP-protected I/O register (`CPU.CCP = IOREG`).
+/// Data-space address of CPU.CCP (`0x0034`, from the generated register layer).
+pub const ccp_address: u16 = @intFromPtr(&microzig.chip.peripherals.CPU.CCP);
+
+/// CPU.CCP signatures, DS40002413 section 7.4.6, page 37.
+pub const Signature = enum(u8) {
+    spm = 0x9D,
+    ioreg = 0xD8,
+};
+
+fn hex(comptime v: u16) []const u8 {
+    // std.fmt is deliberately avoided here; this is comptime only.
+    const digits = "0123456789ABCDEF";
+    comptime var out: []const u8 = "";
+    if (v == 0) return "0";
+    comptime {
+        var v_ = v;
+        while (v_ != 0) : (v_ >>= 4) {
+            out = ([1]u8{digits[v_ & 0xF]} ++ out);
+        }
+    }
+    return "0x" ++ out;
+}
+
+/// Write a CCP-protected I/O register in one indivisible assembly sequence.
 ///
 /// DS40002413 section 7.4.6 "Configuration Change Protection (CCP)", page 37:
 /// writing the IOREG signature to CPU.CCP opens a four-instruction window in
 /// which protected I/O registers accept a write; interrupts are ignored for
 /// the duration of the window.
-/// https://ww1.microchip.com/downloads/aemDocuments/documents/MCU08/ProductDocuments/DataSheets/AVR32-16DD20-14-Complete-DataSheet-DS40002413.pdf#page=37
 ///
-/// `address` is comptime so that the store cannot be preceded by an address
-/// computation that would push it out of the four-instruction window.
+/// Two separate volatile stores do NOT prove the window: the compiler may
+/// interleave loads, spills or other stores between them, and reordering would
+/// silently drop the write. One inline-assembly statement guarantees
+/// adjacency: `ldi`, `out`, `sts` -- three instructions of the four allowed,
+/// with the key load first so the protected store lands inside the window.
+///
+/// `address` must be comptime so it is baked into the `sts` immediate rather
+/// than computed by instructions inside the window.
+///
+/// https://ww1.microchip.com/downloads/aemDocuments/documents/MCU08/ProductDocuments/DataSheets/AVR32-16DD20-14-Complete-DataSheet-DS40002413.pdf#page=37
 pub inline fn write_io(comptime address: u16, value: u8) void {
-    regs.write(regs.cpu.ccp, regs.cpu.signature_ioreg);
-    regs.write(address, value);
+    var sig: u8 = undefined;
+    asm volatile ("ldi %[sig], " ++ hex(@backingInt(Signature.ioreg)) ++ "\n" ++
+            "out 0x14, %[sig]\n" ++
+            "sts " ++ hex(address) ++ ", %[val]"
+        : [sig] "=&d" (sig),
+        : [val] "r" (value),
+    );
 }
 
 /// Write a CCP-protected register that requires the SPM key (`CPU.CCP = SPM`).
 ///
-/// Used by NVMCTRL.CTRLA. Same four-instruction window as `write_io`.
+/// Used only by NVMCTRL.CTRLA. Same four-instruction window as `write_io`.
 /// DS40002413 section 11.3.6 "Configuration Change Protection", page 79.
 /// https://ww1.microchip.com/downloads/aemDocuments/documents/MCU08/ProductDocuments/DataSheets/AVR32-16DD20-14-Complete-DataSheet-DS40002413.pdf#page=79
 pub inline fn write_spm(comptime address: u16, value: u8) void {
-    regs.write(regs.cpu.ccp, regs.cpu.signature_spm);
-    regs.write(address, value);
+    var sig: u8 = undefined;
+    asm volatile ("ldi %[sig], " ++ hex(@backingInt(Signature.spm)) ++ "\n" ++
+            "out 0x14, %[sig]\n" ++
+            "sts " ++ hex(address) ++ ", %[val]"
+        : [sig] "=&d" (sig),
+        : [val] "r" (value),
+    );
+}
+
+test "hex formatting" {
+    try @import("std").testing.expectEqualStrings("0xD8", hex(0xD8));
+    try @import("std").testing.expectEqualStrings("0x34", hex(0x34));
+    try @import("std").testing.expectEqualStrings("0x1400", hex(0x1400));
 }

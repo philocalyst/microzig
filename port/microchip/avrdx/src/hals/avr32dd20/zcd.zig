@@ -8,58 +8,81 @@
 //! is what makes phase-angle control of a triac possible without an opto-
 //! isolated detector.
 
-const regs = @import("registers.zig");
+const microzig = @import("microzig");
 const gpio = @import("gpio.zig");
+
+const zcd = microzig.chip.peripherals.ZCD3;
+const gen = microzig.chip.types.peripherals.ZCD;
 
 /// ZCD3's sense pin.
 pub const input_pin = gpio.pins.pc2;
 
-/// ZCD.INTCTRL.INTMODE.
-pub const InterruptMode = enum(u8) {
-    none = 0x0,
-    /// Rising edge of the detector output.
-    rising = 0x1,
-    falling = 0x2,
-    both = 0x3,
-};
+/// ZCD.INTCTRL.INTMODE; encodings re-exported from the generated layer.
+pub const InterruptMode = gen.ZCD_INTMODE;
 
+/// Zero-cross detector configuration.
 pub const Config = struct {
     /// CTRLA.INVERT - invert the detector output.
     invert: bool = false,
     /// CTRLA.OUTEN - drive the detector output onto the pad.
     output_to_pin: bool = false,
     run_standby: bool = false,
-    interrupt: InterruptMode = .none,
+    interrupt: InterruptMode = .NONE,
+
+    fn to_bits(config: Config) CtrlABits {
+        return .{
+            .ENABLE = 1,
+            .INVERT = @intFromBool(config.invert),
+            .OUTEN = @intFromBool(config.output_to_pin),
+            .RUNSTDBY = @intFromBool(config.run_standby),
+        };
+    }
 };
 
+const CtrlABits = @TypeOf(zcd.CTRLA.read());
+
+/// Apply the configuration and enable ZCD3.
+///
+/// DS40002413 section 35.3.1 "Initialization", page 529.
+/// https://ww1.microchip.com/downloads/aemDocuments/documents/MCU08/ProductDocuments/DataSheets/AVR32-16DD20-14-Complete-DataSheet-DS40002413.pdf#page=529
 pub fn configure(config: Config) void {
-    regs.write(regs.zcd3.ctrla, 0);
+    zcd.CTRLA.write(.{
+        .ENABLE = 0,
+        .INVERT = @intFromBool(config.invert),
+        .OUTEN = @intFromBool(config.output_to_pin),
+        .RUNSTDBY = @intFromBool(config.run_standby),
+    });
 
     gpio.set_direction(input_pin, .input);
     gpio.configure(input_pin, .{ .sense = .input_disable });
 
-    regs.write(regs.zcd3.intctrl, @intFromEnum(config.interrupt));
-
-    var ctrla: u8 = regs.bit(regs.zcd3.enable);
-    if (config.invert) ctrla |= regs.bit(regs.zcd3.invert);
-    if (config.output_to_pin) ctrla |= regs.bit(regs.zcd3.outen);
-    if (config.run_standby) ctrla |= regs.bit(regs.zcd3.runstdby);
-    regs.write(regs.zcd3.ctrla, ctrla);
+    zcd.INTCTRL.write(.{ .INTMODE = config.interrupt });
+    zcd.CTRLA.write(config.to_bits());
 }
 
+/// Disable ZCD3.
 pub fn disable() void {
-    regs.write(regs.zcd3.ctrla, 0);
+    zcd.CTRLA.write(.{
+        .ENABLE = 0,
+        .INVERT = 0,
+        .OUTEN = 0,
+        .RUNSTDBY = 0,
+    });
 }
 
 /// Current detector output.
 pub fn state() bool {
-    return (regs.read(regs.zcd3.status) & regs.bit(regs.zcd3.state)) != 0;
+    return zcd.STATUS.read().STATE == .HIGH;
 }
 
+/// True since the last clear when ACx crossed zero.
 pub fn pending() bool {
-    return (regs.read(regs.zcd3.status) & regs.bit(regs.zcd3.cross_if)) != 0;
+    return zcd.STATUS.read().CROSSIF != 0;
 }
 
+/// Clear the crossing flag.
 pub fn clear_interrupt() void {
-    regs.write(regs.zcd3.status, regs.bit(regs.zcd3.cross_if));
+    var status = zcd.STATUS.read();
+    status.CROSSIF = 1;
+    zcd.STATUS.write(status);
 }

@@ -8,20 +8,33 @@
 //! comparator, and takes its reference from `VREF.ADC0REF` rather than
 //! `VREF.CTRLA`.
 //!
-//! The channel numbering is sparse. On the 20-pin package the analog inputs
-//! are AIN4..AIN7 on PD4..PD7, AIN22..AIN27 on PA2..PA7 and AIN29..AIN31 on
-//! PC1..PC3, which is why `Channel` is a sparse enum keyed to pins.
+//! The channel numbering is sparse, and -- easily overlooked -- the positive
+//! and negative muxes accept *different* sets of inputs; see
+//! `PositiveChannel` and `NegativeChannel`. Pure arithmetic (averaging with
+//! hardware truncation, temperature calibration) lives in `adc_math.zig`,
+//! which carries host unit tests.
 
-const regs = @import("registers.zig");
+const std = @import("std");
+const microzig = @import("microzig");
 const gpio = @import("gpio.zig");
 const vref = @import("vref.zig");
+const capabilities = @import("capabilities.zig");
+/// Accumulation, rescaling and temperature math, unit-tested on the
+/// host against DS40002413 tables.
+pub const adc_math = @import("adc_math.zig");
 
-/// ADC0.MUXPOS / ADC0.MUXNEG channel selection.
+const adc = microzig.chip.peripherals.ADC0;
+const gen = microzig.chip.types.peripherals.ADC;
+
+/// ADC0.MUXPOS selection, restricted to what exists on this part.
 ///
-/// The `ainN_pXn` names carry the pin so that call sites read as the schematic
-/// does. Only the internal sources listed here exist on this part.
-/// DS40002413 section 33.3.3.7 "Channel Selection", page 500.
-pub const Channel = enum(u8) {
+/// Encodings match DS40002413B section 33.5.7 "MUX Selection for Positive ADC
+/// Input", page 511:
+/// https://ww1.microchip.com/downloads/aemDocuments/documents/MCU08/ProductDocuments/DataSheets/AVR32-16DD20-14-Complete-DataSheet-DS40002413.pdf#page=511
+///
+/// The PC channels (AIN29..AIN31) sample pads powered from VDDIO2; they only
+/// exist when MVIO is enabled by fuse -- see `check_mvio` below.
+pub const PositiveChannel = enum(u8) {
     ain4_pd4 = 0x04,
     ain5_pd5 = 0x05,
     ain6_pd6 = 0x06,
@@ -32,14 +45,17 @@ pub const Channel = enum(u8) {
     ain25_pa5 = 0x19,
     ain26_pa6 = 0x1A,
     ain27_pa7 = 0x1B,
+    /// VDDIO2-supplied pad; compile-time gated by the MVIO fuse setting.
     ain29_pc1 = 0x1D,
+    /// VDDIO2-supplied pad; compile-time gated by the MVIO fuse setting.
     ain30_pc2 = 0x1E,
+    /// VDDIO2-supplied pad; compile-time gated by the MVIO fuse setting.
     ain31_pc3 = 0x1F,
 
     /// Internal ground, for offset measurement.
     ground = 0x40,
-    /// On-chip temperature sensor. Needs the 1.024V reference and the
-    /// SIGROW calibration; see `read_temperature_kelvin`.
+    /// On-chip temperature sensor: needs the internal 2.048V reference and
+    /// the SIGROW calibration (DS40002413B section 33.3.3.8, page 500).
     temperature = 0x42,
     /// VDD divided by 10.
     vdd_div10 = 0x44,
@@ -50,11 +66,29 @@ pub const Channel = enum(u8) {
     /// The AC0 DAC reference.
     dacref0 = 0x49,
 
-    /// The GPIO pin this channel measures, or null for internal sources.
+    /// Compile-time MVIO gate.
     ///
-    /// A pin used as an analog input should have its digital input buffer
-    /// switched off first -- see `configure_pin`.
-    pub fn pin(channel: Channel) ?gpio.Pin {
+    /// PC1..PC3 hang off VDDIO2, so their analog channels do not exist unless
+    /// the board was fused dual-supply (FUSE.SYSCFG1.MVSYSCFG = DUAL) and this
+    /// build says so via `capabilities.mvio_enabled_by_fuse`.
+    ///
+    /// Call this yourself at comptime to hard-gate a static channel choice:
+    /// `comptime PositiveChannel.ain29_pc1.check_mvio();` fails the build on
+    /// single-supply targets. The driver's own runtime gate
+    /// (`assert_mvio_channel_ok`) covers dynamic selection either way.
+    ///
+    /// DS40002413B section 19 "MVIO", page 192.
+    pub fn check_mvio(self: PositiveChannel) void {
+        if (!capabilities.mvio_enabled_by_fuse) {
+            switch (self) {
+                .ain29_pc1, .ain30_pc2, .ain31_pc3 => @compileError("channel samples a VDDIO2 (MVIO) pin but this build targets a single-supply board"),
+                else => {},
+            }
+        }
+    }
+
+    /// The GPIO pad this channel measures, or null for internal sources.
+    pub fn pin(channel: PositiveChannel) ?gpio.Pin {
         return switch (channel) {
             .ain4_pd4 => gpio.pins.pd4,
             .ain5_pd5 => gpio.pins.pd5,
@@ -74,145 +108,121 @@ pub const Channel = enum(u8) {
     }
 };
 
-/// ADC0.CTRLA.RESSEL.
-pub const Resolution = enum(u8) {
-    bits12 = 0x0,
-    bits10 = 0x1,
+/// ADC0.MUXNEG selection.
+///
+/// Deliberately a different type from `PositiveChannel`: per DS40002413B
+/// section 33.5.8 "MUX Selection for Negative ADC Input", page 512, the
+/// negative mux accepts only AIN pads, GND and DAC0. The extra internal
+/// sources offered on the positive side (temperature sensor, VDD/10,
+/// VDDIO2/10, DACREF0) do not exist here:
+/// https://ww1.microchip.com/downloads/aemDocuments/documents/MCU08/ProductDocuments/DataSheets/AVR32-16DD20-14-Complete-DataSheet-DS40002413.pdf#page=512
+pub const NegativeChannel = enum(u8) {
+    ain4_pd4 = 0x04,
+    ain5_pd5 = 0x05,
+    ain6_pd6 = 0x06,
+    ain7_pd7 = 0x07,
+    ain22_pa2 = 0x16,
+    ain23_pa3 = 0x17,
+    ain24_pa4 = 0x18,
+    ain25_pa5 = 0x19,
+    ain26_pa6 = 0x1A,
+    ain27_pa7 = 0x1B,
+    ain29_pc1 = 0x1D,
+    ain30_pc2 = 0x1E,
+    ain31_pc3 = 0x1F,
 
-    pub fn max_value(r: Resolution) u16 {
-        return switch (r) {
-            .bits12 => 4095,
-            .bits10 => 1023,
-        };
-    }
+    /// Measure against ground: the differential encoding of a single-ended
+    /// measurement.
+    ground = 0x40,
+    /// DAC0 output as the subtracted source.
+    dac0 = 0x48,
 };
+
+/// ADC0.CTRLA.RESSEL.
+pub const Resolution = gen.ADC_RESSEL;
+
+/// Result ceiling for each resolution, useful for scaling.
+pub fn resolution_max(r: Resolution) u16 {
+    return switch (r) {
+        .@"12BIT" => 4095,
+        .@"10BIT" => 1023,
+        _ => unreachable,
+    };
+}
 
 /// ADC0.CTRLA.CONVMODE.
-pub const ConversionMode = enum(u8) {
-    /// Measure MUXPOS against ground. Result is unsigned.
-    single_ended = 0x0,
-    /// Measure MUXPOS minus MUXNEG. Result is signed two's complement, so
-    /// read it with `read_signed`.
-    differential = 0x1,
-};
+pub const ConversionMode = gen.ADC_CONVMODE;
 
-/// ADC0.CTRLB.SAMPNUM - burst accumulation.
+/// ADC0.CTRLB.SAMPNUM - burst accumulation, re-exported from the generated
+/// layer.
 ///
-/// DS40002413 section 33.3.3.6 "Accumulation", page 499: the accumulator adds
-/// 2^n samples and the result register holds the sum, not the average, so it
-/// can exceed the resolution's range. `Accumulation.count` gives the divisor.
-pub const Accumulation = enum(u8) {
-    none = 0x0,
-    samples2 = 0x1,
-    samples4 = 0x2,
-    samples8 = 0x3,
-    samples16 = 0x4,
-    samples32 = 0x5,
-    samples64 = 0x6,
-    samples128 = 0x7,
+/// DS40002413B section 33.3.3.6 "Accumulation" plus Tables 33-1/33-2, page
+/// 499: RES holds the *sum* of 2^n conversions, and above 16 samples the sum
+/// no longer fits in 16 bits so the hardware silently truncates the LSBs.
+/// Use the truncation-aware helpers in `adc_math` on raw results.
+pub const Accumulation = gen.ADC_SAMPNUM;
 
-    pub fn count(a: Accumulation) u8 {
-        return @as(u8, 1) << @intCast(@intFromEnum(a));
-    }
-};
-
-/// ADC0.CTRLC.PRESC - CLK_ADC = CLK_PER / divisor.
+/// ADC0.CTRLC.PRESC - CLK_ADC = CLK_PER / divisor, re-exported from the
+/// generated layer.
 ///
-/// DS40002413 section 33.3.3.3 "Clock Generation", page 494: CLK_ADC must land
-/// within the range the electrical characteristics allow (nominally
-/// 125 kHz - 2 MHz for full accuracy), so pick a divisor from CLK_PER.
-pub const Prescaler = enum(u8) {
-    div2 = 0x0,
-    div4 = 0x1,
-    div8 = 0x2,
-    div12 = 0x3,
-    div16 = 0x4,
-    div20 = 0x5,
-    div24 = 0x6,
-    div28 = 0x7,
-    div32 = 0x8,
-    div48 = 0x9,
-    div64 = 0xA,
-    div96 = 0xB,
-    div128 = 0xC,
-    div256 = 0xD,
+/// DS40002413B section 33.3.3.3 "Clock Generation", page 494: keep CLK_ADC
+/// inside the electrical characteristics' range (nominally 125 kHz - 2 MHz).
+pub const Prescaler = gen.ADC_PRESC;
 
-    pub fn divisor(p: Prescaler) u16 {
-        return switch (p) {
-            .div2 => 2,
-            .div4 => 4,
-            .div8 => 8,
-            .div12 => 12,
-            .div16 => 16,
-            .div20 => 20,
-            .div24 => 24,
-            .div28 => 28,
-            .div32 => 32,
-            .div48 => 48,
-            .div64 => 64,
-            .div96 => 96,
-            .div128 => 128,
-            .div256 => 256,
-        };
-    }
-};
+/// Numeric CLK_PER division factor of a prescaler setting.
+pub fn prescaler_divisor(p: Prescaler) u16 {
+    return switch (p) {
+        // Reserved encodings are treated as DIV2; they cannot be named through
+        // this module's API, only forced via @enumFromInt.
+        .DIV2 => 2,
+        .DIV4 => 4,
+        .DIV8 => 8,
+        .DIV12 => 12,
+        .DIV16 => 16,
+        .DIV20 => 20,
+        .DIV24 => 24,
+        .DIV28 => 28,
+        .DIV32 => 32,
+        .DIV48 => 48,
+        .DIV64 => 64,
+        .DIV96 => 96,
+        .DIV128 => 128,
+        .DIV256 => 256,
+        else => 2,
+    };
+}
 
-/// ADC0.CTRLD.INITDLY - settling delay after the ADC or the reference is
-/// enabled, in CLK_ADC cycles.
-pub const InitialDelay = enum(u8) {
-    cycles0 = 0x0,
-    cycles16 = 0x1,
-    cycles32 = 0x2,
-    cycles64 = 0x3,
-    cycles128 = 0x4,
-    cycles256 = 0x5,
-};
+/// ADC0.CTRLD.INITDLY - settling delay after enabling the ADC or reference,
+/// in CLK_ADC cycles. Re-exported from the generated layer.
+pub const InitialDelay = gen.ADC_INITDLY;
 
-/// ADC0.CTRLD.SAMPDLY - extra delay between the samples of an accumulation
-/// burst, which spreads them out to decorrelate noise.
-pub const SampleDelay = enum(u8) {
-    cycles0 = 0x0,
-    cycles1 = 0x1,
-    cycles2 = 0x2,
-    cycles3 = 0x3,
-    cycles4 = 0x4,
-    cycles5 = 0x5,
-    cycles6 = 0x6,
-    cycles7 = 0x7,
-    cycles8 = 0x8,
-    cycles9 = 0x9,
-    cycles10 = 0xA,
-    cycles11 = 0xB,
-    cycles12 = 0xC,
-    cycles13 = 0xD,
-    cycles14 = 0xE,
-    cycles15 = 0xF,
-};
+/// Smallest INITDLY satisfying ">= N CLK_ADC cycles".
+pub fn initial_delay_for_cycles(cycles_needed: u32) InitialDelay {
+    return @fromBackingInt(@intCast(adc_math.initial_delay_for_cycles(cycles_needed)));
+}
 
-/// ADC0.CTRLE.WINCM - window comparator mode.
-///
-/// DS40002413 section 33.3.3.9 "Window Comparator", page 501.
-pub const WindowMode = enum(u8) {
-    none = 0x0,
-    below_low = 0x1,
-    above_high = 0x2,
-    inside = 0x3,
-    outside = 0x4,
-};
+/// ADC0.CTRLD.SAMPDLY - spacing between the samples of an accumulation burst.
+pub const SampleDelay = gen.ADC_SAMPDLY;
 
+/// ADC0.CTRLE.WINCM - window comparator mode, re-exported from the generated
+/// layer. DS40002413B section 33.3.3.9 "Window Comparator", page 501.
+pub const WindowMode = gen.ADC_WINCM;
+
+/// ADC configuration; every field documents its hardware effect.
 pub const Config = struct {
-    channel: Channel = .ain22_pa2,
-    /// Only used in differential mode.
-    negative_channel: Channel = .ground,
-    reference: vref.Reference = .vdd,
-    resolution: Resolution = .bits12,
-    conversion_mode: ConversionMode = .single_ended,
-    accumulation: Accumulation = .none,
-    prescaler: Prescaler = .div16,
-    initial_delay: InitialDelay = .cycles0,
-    sample_delay: SampleDelay = .cycles0,
+    channel: PositiveChannel = .ain22_pa2,
+    /// Only used in differential mode. Note the distinct type: the negative
+    /// mux takes a different set of inputs.
+    negative_channel: NegativeChannel = .ground,
+    reference: vref.Reference = .VDD,
+    resolution: Resolution = .@"12BIT",
+    conversion_mode: ConversionMode = .SINGLEENDED,
+    accumulation: Accumulation = .NONE,
+    prescaler: Prescaler = .DIV16,
+    initial_delay: InitialDelay = .DLY0,
+    sample_delay: SampleDelay = .DLY0,
     /// SAMPCTRL.SAMPLEN - extra CLK_ADC cycles of sample time, for sources
-    /// with a high output impedance.
+    /// with high output impedance.
     sample_length: u8 = 0,
     /// CTRLA.FREERUN - start the next conversion as soon as one finishes.
     free_running: bool = false,
@@ -220,95 +230,140 @@ pub const Config = struct {
     left_adjust: bool = false,
     /// CTRLA.RUNSTBY - keep converting in standby sleep.
     run_standby: bool = false,
-    /// EVCTRL.STARTEI - start a conversion from an event channel.
+    /// EVCTRL.STARTEI - start conversions from an event channel.
     start_on_event: bool = false,
-    /// Also configure the input pin: disable its digital input buffer, which
-    /// the datasheet requires for an analog input.
+    /// Disable the digital input buffer of the used pin, as the datasheet
+    /// requires for analog inputs.
     configure_pin: bool = true,
 };
 
 /// Configure and enable the ADC.
 ///
-/// DS40002413 section 33.3.2 "Initialization", page 492: set up the reference
-/// and the mux before setting CTRLA.ENABLE, which is what this ordering does.
+/// DS40002413B section 33.3.2 "Initialization", page 492: set up the
+/// reference and mux before CTRLA.ENABLE, which this ordering does.
 /// https://ww1.microchip.com/downloads/aemDocuments/documents/MCU08/ProductDocuments/DataSheets/AVR32-16DD20-14-Complete-DataSheet-DS40002413.pdf#page=492
 pub fn configure(config: Config) void {
-    regs.write(regs.adc0.ctrla, 0);
+    assert_mvio_channel_ok(config.channel);
+
+    adc.CTRLA.write(.{
+        .ENABLE = 0,
+        .FREERUN = 0,
+        .RESSEL = config.resolution,
+        .LEFTADJ = @intFromBool(config.left_adjust),
+        .CONVMODE = config.conversion_mode,
+        .RUNSTBY = @intFromBool(config.run_standby),
+    });
 
     vref.set_adc0_reference(config.reference);
 
     if (config.configure_pin) {
         if (config.channel.pin()) |p| disable_digital_input(p);
-        if (config.conversion_mode == .differential) {
-            if (config.negative_channel.pin()) |p| disable_digital_input(p);
+        if (config.conversion_mode == .DIFF) {
+            if (negative_pin(config.negative_channel)) |p| disable_digital_input(p);
         }
     }
 
-    regs.write(regs.adc0.muxpos, @intFromEnum(config.channel));
-    regs.write(regs.adc0.muxneg, @intFromEnum(config.negative_channel));
-    regs.write(regs.adc0.ctrlb, @intFromEnum(config.accumulation));
-    regs.write(regs.adc0.ctrlc, @intFromEnum(config.prescaler));
-    regs.write(
-        regs.adc0.ctrld,
-        @intFromEnum(config.sample_delay) | (@as(u8, @intFromEnum(config.initial_delay)) << 5),
-    );
-    regs.write(regs.adc0.sampctrl, config.sample_length);
-    regs.write(regs.adc0.evctrl, if (config.start_on_event) regs.bit(regs.adc0.startei) else 0);
+    adc.MUXPOS.write(.{ .MUXPOS = @fromBackingInt(@intCast(@backingInt(config.channel))) });
+    adc.MUXNEG.write(.{ .MUXNEG = @fromBackingInt(@intCast(@backingInt(config.negative_channel))) });
+    adc.CTRLB.modify(.{ .SAMPNUM = config.accumulation });
+    adc.CTRLC.modify(.{ .PRESC = config.prescaler });
+    adc.CTRLD.modify(.{
+        .SAMPDLY = config.sample_delay,
+        .INITDLY = config.initial_delay,
+    });
+    adc.SAMPCTRL.modify(.{ .SAMPLEN = config.sample_length });
+    adc.EVCTRL.modify(.{ .STARTEI = @intFromBool(config.start_on_event) });
 
-    var ctrla: u8 = regs.bit(regs.adc0.enable) |
-        (@as(u8, @intFromEnum(config.resolution)) << 2) |
-        (@as(u8, @intFromEnum(config.conversion_mode)) << 5);
-    if (config.free_running) ctrla |= regs.bit(regs.adc0.freerun);
-    if (config.left_adjust) ctrla |= regs.bit(regs.adc0.leftadj);
-    if (config.run_standby) ctrla |= regs.bit(regs.adc0.runstby);
-    regs.write(regs.adc0.ctrla, ctrla);
+    adc.CTRLA.write(.{
+        .ENABLE = 1,
+        .FREERUN = @intFromBool(config.free_running),
+        .RESSEL = config.resolution,
+        .LEFTADJ = @intFromBool(config.left_adjust),
+        .CONVMODE = config.conversion_mode,
+        .RUNSTBY = @intFromBool(config.run_standby),
+    });
+}
+
+fn negative_pin(channel: NegativeChannel) ?gpio.Pin {
+    return switch (channel) {
+        .ain4_pd4 => gpio.pins.pd4,
+        .ain5_pd5 => gpio.pins.pd5,
+        .ain6_pd6 => gpio.pins.pd6,
+        .ain7_pd7 => gpio.pins.pd7,
+        .ain22_pa2 => gpio.pins.pa2,
+        .ain23_pa3 => gpio.pins.pa3,
+        .ain24_pa4 => gpio.pins.pa4,
+        .ain25_pa5 => gpio.pins.pa5,
+        .ain26_pa6 => gpio.pins.pa6,
+        .ain27_pa7 => gpio.pins.pa7,
+        .ain29_pc1 => gpio.pins.pc1,
+        .ain30_pc2 => gpio.pins.pc2,
+        .ain31_pc3 => gpio.pins.pc3,
+        else => null,
+    };
+}
+
+/// Runtime half of the MVIO gate: in a single-supply build
+/// (`capabilities.mvio_enabled_by_fuse == false`) selecting a VDDIO2-side
+/// channel panics instead of measuring nothing. The compile-error variant of
+/// this gate exists for comptime-known channels via `check_mvio_comptime`.
+fn assert_mvio_channel_ok(channel: PositiveChannel) void {
+    if (!capabilities.mvio_enabled_by_fuse) {
+        switch (channel) {
+            .ain29_pc1, .ain30_pc2, .ain31_pc3 => @panic("ADC channel on a VDDIO2 (PC) pin was selected in a single-supply build"),
+            else => {},
+        }
+    }
 }
 
 /// Turn off a pin's digital input buffer, as required for an analog input.
 ///
-/// DS40002413 section 33.3.4 "I/O Lines and Connections", page 501: leaving the
-/// digital input enabled on an analog pin both wastes current and injects
-/// switching noise into the measurement.
+/// DS40002413B section 33.3.4 "I/O Lines and Connections", page 501.
 /// https://ww1.microchip.com/downloads/aemDocuments/documents/MCU08/ProductDocuments/DataSheets/AVR32-16DD20-14-Complete-DataSheet-DS40002413.pdf#page=501
 pub fn disable_digital_input(p: gpio.Pin) void {
-    gpio.set_direction(p, .input);
-    gpio.configure(p, .{ .sense = .input_disable });
+    gpio.set_direction_rt(p, .input);
+    gpio.configure_rt(p, .{ .sense = .input_disable });
 }
 
+/// Disable the ADC (CTRLA.ENABLE = 0) and stop conversions.
 pub fn disable() void {
-    regs.clear_bits(regs.adc0.ctrla, regs.bit(regs.adc0.enable));
+    adc.CTRLA.modify(.{ .ENABLE = 0 });
 }
 
 /// Point the positive mux at a different channel between conversions.
-pub fn select_channel(channel: Channel) void {
-    regs.write(regs.adc0.muxpos, @intFromEnum(channel));
+pub fn select_channel(channel: PositiveChannel) void {
+    assert_mvio_channel_ok(channel);
+    adc.MUXPOS.write(.{ .MUXPOS = @fromBackingInt(@intCast(@backingInt(channel))) });
 }
 
-pub fn select_negative_channel(channel: Channel) void {
-    regs.write(regs.adc0.muxneg, @intFromEnum(channel));
+/// Change MUXNEG for differential or window-compared sampling.
+pub fn select_negative_channel(channel: NegativeChannel) void {
+    adc.MUXNEG.write(.{ .MUXNEG = @fromBackingInt(@intCast(@backingInt(channel))) });
 }
 
 /// Start a conversion (COMMAND.STCONV).
 pub fn start() void {
-    regs.write(regs.adc0.command, regs.bit(regs.adc0.stconv));
+    adc.COMMAND.write(.{ .STCONV = 1, .SPCONV = 0 });
 }
 
 /// Abort an in-flight conversion, including a free-running sequence.
 pub fn stop() void {
-    regs.write(regs.adc0.command, regs.bit(regs.adc0.spconv));
+    adc.COMMAND.write(.{ .STCONV = 0, .SPCONV = 1 });
 }
 
+/// True when a fresh result waits in RES (INTFLAGS.RESRDY).
 pub fn result_ready() bool {
-    return (regs.read(regs.adc0.intflags) & regs.bit(regs.adc0.resrdy)) != 0;
+    return adc.INTFLAGS.read().RESRDY != 0;
 }
 
 /// Raw contents of ADC0.RES.
 ///
-/// DS40002413 section 33.3.3.5 "Conversion Result (Output Formats)", page 497:
-/// reading RES clears RESRDY, so a handler does not need to clear the flag
-/// separately.
+/// DS40002413B section 33.3.3.5 "Conversion Result (Output Formats)", page
+/// 497: reading RES clears RESRDY, so handlers need no separate flag clear.
+/// With accumulation above 16 samples this value is truncated by the
+/// hardware; interpret it through `adc_math`.
 pub fn read_raw() u16 {
-    return regs.mem16(regs.adc0.res).*;
+    return adc.RES;
 }
 
 /// Result of a differential conversion, as a signed value.
@@ -324,209 +379,140 @@ pub fn read_blocking() u16 {
 }
 
 /// Convert one channel, blocking, without disturbing the rest of the setup.
-pub fn read_channel_blocking(channel: Channel) u16 {
+pub fn read_channel_blocking(channel: PositiveChannel) u16 {
     select_channel(channel);
     return read_blocking();
 }
 
-/// Average of an accumulated burst.
-///
-/// The result register holds the *sum*, so divide by the sample count to get
-/// back to the configured resolution.
+/// Average of an accumulated burst, truncation-aware (see `adc_math`).
 pub fn average(raw: u16, accumulation: Accumulation) u16 {
-    return raw / accumulation.count();
+    return adc_math.accumulation_average(@backingInt(accumulation), raw);
 }
 
 /// Convert a single-ended raw reading to millivolts.
 pub fn to_millivolts(raw: u16, reference: vref.Reference, resolution: Resolution) u32 {
-    const reference_mv = reference.millivolts() orelse return 0;
-    return (@as(u32, raw) * reference_mv) / (@as(u32, resolution.max_value()) + 1);
+    const reference_mv = vref.reference_millivolts(reference) orelse return 0;
+    return (@as(u32, raw) * reference_mv) / (@as(u32, resolution_max(resolution)) + 1);
 }
 
 // -- Interrupts and window comparator ---------------------------------------
 
+/// Raise the ADC interrupt on each completed conversion.
 pub fn enable_result_interrupt() void {
-    regs.set_bits(regs.adc0.intctrl, regs.bit(regs.adc0.resrdy));
+    adc.INTCTRL.modify(.{ .RESRDY = 1 });
 }
 
+/// Mask the result-ready interrupt.
 pub fn disable_result_interrupt() void {
-    regs.clear_bits(regs.adc0.intctrl, regs.bit(regs.adc0.resrdy));
+    adc.INTCTRL.modify(.{ .RESRDY = 0 });
 }
 
+/// Clear the result-ready flag (write-one-to-clear).
 pub fn clear_result_flag() void {
-    regs.write(regs.adc0.intflags, regs.bit(regs.adc0.resrdy));
+    adc.INTFLAGS.write(.{ .RESRDY = 1, .WCMP = 0 });
 }
 
-/// Have the ADC raise an interrupt only when a result falls in (or out of) a
-/// window, so routine in-range samples cost no CPU time.
+/// Interrupt only when a result falls in (or out of) a window.
 pub fn configure_window(mode: WindowMode, low: u16, high: u16, interrupt: bool) void {
-    regs.mem16(regs.adc0.winlt).* = low;
-    regs.mem16(regs.adc0.winht).* = high;
-    regs.write(regs.adc0.ctrle, @intFromEnum(mode));
-    if (interrupt) {
-        regs.set_bits(regs.adc0.intctrl, regs.bit(regs.adc0.wcmp));
-    } else {
-        regs.clear_bits(regs.adc0.intctrl, regs.bit(regs.adc0.wcmp));
-    }
+    adc.WINLT = low;
+    adc.WINHT = high;
+    adc.CTRLE.modify(.{ .WINCM = mode });
+    adc.INTCTRL.modify(.{ .WCMP = @intFromBool(interrupt) });
 }
 
+/// True when the last result satisfied the window comparison.
 pub fn window_pending() bool {
-    return (regs.read(regs.adc0.intflags) & regs.bit(regs.adc0.wcmp)) != 0;
+    return adc.INTFLAGS.read().WCMP != 0;
 }
 
+/// Clear the window-comparator flag (write-one-to-clear).
 pub fn clear_window_flag() void {
-    regs.write(regs.adc0.intflags, regs.bit(regs.adc0.wcmp));
+    adc.INTFLAGS.write(.{ .RESRDY = 0, .WCMP = 1 });
 }
 
 // -- Temperature -------------------------------------------------------------
 //
-// DS40002413 section 33.3.3.8 "Temperature Measurement", page 500, gives the
-// procedure and the equation; the reference code listing is on page 501.
+// Procedure, equation and listing: DS40002413B section 33.3.3.8, page 500
+// (listing continues onto page 501):
 // https://ww1.microchip.com/downloads/aemDocuments/documents/MCU08/ProductDocuments/DataSheets/AVR32-16DD20-14-Complete-DataSheet-DS40002413.pdf#page=500
 //
-// The datasheet's own listing is:
+//   1. Internal 2.048V reference.          4. SAMPLEN >= 28 us x f_CLK_ADC.
+//   2. TEMPSENSE as MUXPOS.                5. 12-bit right-adjusted
+//   3. INITDLY >= 25 us x f_CLK_ADC.          single-ended conversion.
+//   6. T(K) = (TEMPSENSE1 - RES) * TEMPSENSE0 / 4096.
 //
-//     uint16_t sigrow_offset = SIGROW.TEMPSENSE1;
-//     uint16_t sigrow_slope  = SIGROW.TEMPSENSE0;
-//     uint16_t adc_reading   = ADCn.RES;
-//     uint32_t temp = sigrow_offset - adc_reading;
-//     temp *= sigrow_slope;
-//     temp += SCALING_FACTOR / 2;
-//     temp /= SCALING_FACTOR;              // SCALING_FACTOR is 4096
-//     uint16_t temperature_in_K = temp;
-//     int16_t  temperature_in_C = temp - 273;
-//
-// Note how little of this survives from tinyAVR-1/megaAVR-0: both calibration
-// words are 16-bit, TEMPSENSE1 is the *offset* and TEMPSENSE0 the *slope*, the
-// subtraction runs offset-minus-reading, and the divisor is 4096 rather than
-// 256. The reference is the internal 2.048V, not 1.024V.
+// Both calibration words are 16-bit -- unlike tinyAVR-1/megaAVR-0's 8-bit
+// gain/offset pair -- TEMPSENSE1 is the offset and TEMPSENSE0 the slope, and
+// the divisor is 4096, not 256.
 
-/// Divisor the signature-row slope is scaled by, so that it can be stored as a
-/// whole number.
-pub const temperature_scaling_factor: u32 = 4096;
+/// Fixed-point divisor shared by the temperature math.
+pub const temperature_scaling_factor = adc_math.temperature_scaling_factor;
 
-/// The reference the factory calibration values are generated against.
-pub const temperature_reference: vref.Reference = .internal_2v048;
+/// The reference the factory calibration was generated against.
+pub const temperature_reference: vref.Reference = .@"2V048";
 
-/// Factory calibration for the on-chip temperature sensor.
-pub const TemperatureCalibration = struct {
-    /// SIGROW.TEMPSENSE0 - slope of the sensor characteristic.
-    slope: u16,
-    /// SIGROW.TEMPSENSE1 - offset of the sensor characteristic.
-    offset: u16,
+/// SIGROW calibration words for the temperature sensor.
+pub const TemperatureCalibration = adc_math.TemperatureCalibration;
 
-    /// Rescale the calibration for a reference other than 2.048V.
-    ///
-    /// DS40002413 section 33.3.3.8, page 501:
-    /// `Slope = TEMPSENSE0 * V_ADCREF / 2.048V` and
-    /// `Offset = TEMPSENSE1 * 2.048V / V_ADCREF`.
-    /// https://ww1.microchip.com/downloads/aemDocuments/documents/MCU08/ProductDocuments/DataSheets/AVR32-16DD20-14-Complete-DataSheet-DS40002413.pdf#page=501
-    ///
-    /// Returns null for VDD and the external pin, whose voltage the device
-    /// cannot know.
-    pub fn for_reference(c: TemperatureCalibration, reference: vref.Reference) ?TemperatureCalibration {
-        const reference_mv = reference.millivolts() orelse return null;
-        return .{
-            .slope = @intCast((@as(u32, c.slope) * reference_mv) / 2048),
-            .offset = @intCast((@as(u32, c.offset) * 2048) / reference_mv),
-        };
-    }
-};
-
-pub fn temperature_calibration() TemperatureCalibration {
-    return .{
-        .slope = regs.mem16(regs.sigrow.tempsense0).*,
-        .offset = regs.mem16(regs.sigrow.tempsense1).*,
-    };
-}
-
-/// Smallest INITDLY that satisfies the datasheet's "at least 25 us" settling
-/// requirement at the given ADC clock.
+/// Smallest INITDLY satisfying step 3 ("INITDLY >= 25 us x f_CLK_ADC",
+/// page 500).
 pub fn temperature_initial_delay(clk_adc_hz: u32) InitialDelay {
-    const cycles = (clk_adc_hz / 1000 * 25) / 1000; // 25 us, in CLK_ADC cycles
-    return if (cycles <= 16)
-        .cycles16
-    else if (cycles <= 32)
-        .cycles32
-    else if (cycles <= 64)
-        .cycles64
-    else if (cycles <= 128)
-        .cycles128
-    else
-        .cycles256;
+    return @fromBackingInt(@intCast(adc_math.temperature_initial_delay_code(clk_adc_hz)));
 }
 
-/// SAMPCTRL.SAMPLEN satisfying the datasheet's "at least 28 us" sample time.
-/// Saturates at the register's 255-cycle maximum.
+/// Smallest SAMPLEN satisfying step 4 ("SAMPLEN >= 28 us x f_CLK_ADC").
 pub fn temperature_sample_length(clk_adc_hz: u32) u8 {
-    const cycles = (clk_adc_hz / 1000 * 28) / 1000;
-    return @intCast(@min(cycles, 255));
+    return adc_math.temperature_sample_length(clk_adc_hz);
 }
 
-/// ADC configuration for a temperature reading, per the six-step procedure in
-/// DS40002413 section 33.3.3.8, page 500: internal 2.048V reference, the
-/// temperature sensor as MUXPOS, a settling delay and a long sample time, and
-/// a 12-bit right-adjusted single-ended conversion.
-///
-/// `clk_adc_hz` is CLK_PER divided by the ADC prescaler; `Prescaler.divisor`
-/// gives the divisor.
-pub fn temperature_config(clk_adc_hz: u32, prescaler: Prescaler) Config {
-    return .{
-        .channel = .temperature,
-        .reference = temperature_reference,
-        .resolution = .bits12,
-        .conversion_mode = .single_ended,
-        .accumulation = .none,
-        .left_adjust = false,
-        .prescaler = prescaler,
-        .initial_delay = temperature_initial_delay(clk_adc_hz),
-        .sample_length = temperature_sample_length(clk_adc_hz),
-        .configure_pin = false,
-    };
-}
-
-/// Apply the datasheet equation to a 12-bit reading.
-///
-/// `T(K) = (Offset - ADC result) * Slope / 4096`, rounded to nearest.
-///
-/// The datasheet's listing does this in a `uint32_t`, which silently wraps to
-/// roughly 65000 K if the reading ever exceeds the offset. Microchip's own
-/// reference example for the AVR128DA48 Curiosity Nano uses a signed `int32_t`
-/// for the same arithmetic, which is what this follows -- with the result
-/// clamped at zero, so an out-of-range reading is visibly wrong rather than
-/// plausible.
+/// Datasheet equation with round-to-nearest and out-of-range clamping.
 pub fn temperature_kelvin(raw: u16, calibration: TemperatureCalibration) u16 {
-    const difference = @as(i32, calibration.offset) - @as(i32, raw);
-    if (difference <= 0) return 0;
-
-    var temp: u32 = @intCast(difference);
-    temp *= calibration.slope; // overflows 16 bits, hence u32
-    temp += temperature_scaling_factor / 2; // round instead of truncate
-    temp /= temperature_scaling_factor;
-    return @intCast(@min(temp, 0xFFFF));
+    return adc_math.temperature_kelvin(raw, calibration);
 }
 
 /// Same reading in degrees Celsius.
 pub fn temperature_celsius(raw: u16, calibration: TemperatureCalibration) i16 {
-    return @as(i16, @intCast(temperature_kelvin(raw, calibration))) - 273;
+    return adc_math.temperature_celsius(raw, calibration);
 }
 
-/// Raw 12-bit reading from the temperature sensor. Configure with
-/// `temperature_config` first.
+/// Read TEMPSENSE0/1 from the signature row.
+pub fn temperature_calibration() TemperatureCalibration {
+    return .{
+        .slope = microzig.chip.peripherals.SIGROW.TEMPSENSE0.read().TEMPSENSE0,
+        .offset = microzig.chip.peripherals.SIGROW.TEMPSENSE1.read().TEMPSENSE1,
+    };
+}
+
+/// ADC configuration implementing steps 1-5 of the procedure on page 500.
+pub fn temperature_config(clk_adc_hz: u32, prescaler: Prescaler) Config {
+    return .{
+        .channel = .temperature,
+        .reference = temperature_reference,
+        .resolution = .@"12BIT",
+        .conversion_mode = .SINGLEENDED,
+        .accumulation = .NONE,
+        .left_adjust = false,
+        .prescaler = prescaler,
+        .initial_delay = @fromBackingInt(@intCast(adc_math.temperature_initial_delay_code(clk_adc_hz))),
+        .sample_length = adc_math.temperature_sample_length(clk_adc_hz),
+        .configure_pin = false,
+    };
+}
+
+/// Run one temperature measurement and return raw ADC codes.
+/// Uses the factory procedure: 2.048 V reference, divide-by-4
+/// scaling and the datasheet delay/sample times.
 pub fn read_temperature_raw() u16 {
     return read_blocking();
 }
 
 /// Read the sensor and convert, in one call.
-///
-/// Assumes the ADC is already configured with `temperature_config`. If
-/// accumulation is enabled the datasheet requires scaling the result back to
-/// 12 bits before converting, which `temperature_config` avoids by turning
-/// accumulation off.
 pub fn read_temperature_kelvin() u16 {
     return temperature_kelvin(read_blocking(), temperature_calibration());
 }
 
+/// Temperature in degrees Celsius from SIGROW calibration.
+/// Accuracy is +/-1 LSB of the calibration, not lab grade.
 pub fn read_temperature_celsius() i16 {
     return temperature_celsius(read_blocking(), temperature_calibration());
 }

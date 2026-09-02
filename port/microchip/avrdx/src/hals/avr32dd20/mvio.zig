@@ -9,21 +9,17 @@
 //! FUSE.SYSCFG1.MVSYSCFG fuse, not by software -- this module only reports and
 //! reacts to VDDIO2's state.
 
-const regs = @import("registers.zig");
+const microzig = @import("microzig");
 
-/// FUSE.SYSCFG1.MVSYSCFG, bits 4:3. Read-only from the running application.
-pub const SystemConfiguration = enum(u8) {
-    /// VDDIO2 is tied to VDD externally; PORTC behaves like any other port.
-    single_supply = 0x0,
-    /// VDDIO2 is supplied separately. PORTC is only usable while VDDIO2 is
-    /// above its threshold.
-    dual_supply = 0x1,
-    _,
-};
+const chip = microzig.chip.peripherals;
+
+/// FUSE.SYSCFG1.MVSYSCFG. Read-only from the running application; encodings
+/// come from the generated layer (DUAL = 0x1, SINGLE = 0x2).
+pub const SystemConfiguration = microzig.chip.types.peripherals.FUSE.FUSE_MVSYSCFG;
 
 /// Read the MVIO fuse setting that this device was programmed with.
 pub fn system_configuration() SystemConfiguration {
-    return @enumFromInt((regs.read(regs.fuse.syscfg1) & 0x18) >> 3);
+    return chip.FUSE.SYSCFG1.read().MVSYSCFG;
 }
 
 /// True when VDDIO2 is present and above the MVIO threshold, i.e. when PORTC
@@ -33,7 +29,7 @@ pub fn system_configuration() SystemConfiguration {
 /// bit reads 1 permanently, so the same code works either way.
 /// https://ww1.microchip.com/downloads/aemDocuments/documents/MCU08/ProductDocuments/DataSheets/AVR32-16DD20-14-Complete-DataSheet-DS40002413.pdf#page=199
 pub fn vddio2_ok() bool {
-    return (regs.read(regs.mvio.status) & regs.bit(regs.mvio.vddio2s)) != 0;
+    return chip.MVIO.STATUS.read().VDDIO2S != 0;
 }
 
 /// Raise an interrupt whenever VDDIO2 crosses its threshold in either
@@ -42,19 +38,22 @@ pub fn vddio2_ok() bool {
 /// DS40002413 section 19.3.4 "Interrupts", page 194. Useful for parking PORTC
 /// safely when the second supply drops.
 pub fn enable_interrupt() void {
-    regs.set_bits(regs.mvio.intctrl, regs.bit(regs.mvio.vddio2ie));
+    chip.MVIO.INTCTRL.modify(.{ .VDDIO2IE = 1 });
 }
 
+/// Mask the MVIO interrupt.
 pub fn disable_interrupt() void {
-    regs.clear_bits(regs.mvio.intctrl, regs.bit(regs.mvio.vddio2ie));
+    chip.MVIO.INTCTRL.modify(.{ .VDDIO2IE = 0 });
 }
 
+/// True when VDDIO2 changed state since the last clear.
 pub fn interrupt_pending() bool {
-    return (regs.read(regs.mvio.intflags) & regs.bit(regs.mvio.vddio2if)) != 0;
+    return chip.MVIO.INTFLAGS.read().VDDIO2IF != 0;
 }
 
+/// Clear the MVIO interrupt flag.
 pub fn clear_interrupt() void {
-    regs.write(regs.mvio.intflags, regs.bit(regs.mvio.vddio2if));
+    chip.MVIO.INTFLAGS.write(.{ .VDDIO2IF = 1 });
 }
 
 /// Block until VDDIO2 comes up.

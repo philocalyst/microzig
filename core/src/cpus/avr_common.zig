@@ -83,7 +83,12 @@ pub fn generate_vector_table_asm(comptime jump_insn: JumpInstruction) []const u8
     const interrupt_options = microzig.options.interrupts;
 
     for (field_names[1..]) |field_name| {
-        const handler = @field(interrupt_options, field_name);
+        // Reserved vectors have no entry in the interrupt options, so they
+        // route to the unhandled-vector handler like any unset interrupt.
+        const handler = if (@hasField(@TypeOf(interrupt_options), field_name))
+            @field(interrupt_options, field_name)
+        else
+            null;
         if (handler) |func| {
             const isr_symbol = export_isr_handler(field_name, func);
             asm_str = asm_str ++ jump_insn.to_string() ++ " " ++ isr_symbol ++ "\n";

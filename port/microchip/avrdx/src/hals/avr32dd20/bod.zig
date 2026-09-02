@@ -10,48 +10,25 @@
 //! this peripheral for most firmware: it warns you *before* VDD reaches the
 //! reset threshold.
 
-const regs = @import("registers.zig");
+const microzig = @import("microzig");
 
-/// BOD.CTRLB.LVL - the reset threshold, set by FUSE.BODCFG.LVL.
-pub const Level = enum(u8) {
-    v1_9 = 0x0,
-    v2_45 = 0x1,
-    v2_7 = 0x2,
-    v2_85 = 0x3,
-    _,
+const bod = microzig.chip.peripherals.BOD;
+const gen = microzig.chip.types.peripherals.BOD;
 
-    pub fn millivolts(l: Level) ?u16 {
-        return switch (l) {
-            .v1_9 => 1900,
-            .v2_45 => 2450,
-            .v2_7 => 2700,
-            .v2_85 => 2850,
-            _ => null,
-        };
-    }
-};
+/// BOD.CTRLB.LVL - the reset threshold, set by FUSE.BODCFG.LVL. Re-exported
+/// from the generated layer.
+pub const Level = gen.BOD_LVL;
 
 /// BOD.VLMCTRLA.VLMLVL - where the monitor trips, as a margin above the BOD
 /// level. Picking 25% above a 2.7V BOD gives a warning at ~3.4V.
-pub const MonitorLevel = enum(u8) {
-    off = 0x0,
-    above5 = 0x1,
-    above15 = 0x2,
-    above25 = 0x3,
-};
+pub const MonitorLevel = gen.BOD_VLMLVL;
 
 /// BOD.INTCTRL.VLMCFG - which crossing direction raises the interrupt.
-pub const MonitorEdge = enum(u8) {
-    /// VDD fell below the threshold: the "we are about to brown out" warning.
-    falling = 0x0,
-    /// VDD rose back above the threshold.
-    rising = 0x1,
-    both = 0x2,
-};
+pub const MonitorEdge = gen.BOD_VLMCFG;
 
 /// The configured brown-out reset threshold.
 pub fn level() Level {
-    return @enumFromInt(regs.read(regs.bod.ctrlb) & 0x07);
+    return bod.CTRLB.read().LVL;
 }
 
 /// Enable the voltage level monitor and its interrupt.
@@ -63,27 +40,30 @@ pub fn level() Level {
 /// BOD.CTRLA are (Table 20-2, section 20.3.4, page 202), and this HAL never
 /// writes CTRLA, so the BOD needs no CCP window at all.
 pub fn enable_monitor(monitor_level: MonitorLevel, edge: MonitorEdge) void {
-    regs.write(regs.bod.vlmctrla, @intFromEnum(monitor_level));
-    regs.write(
-        regs.bod.intctrl,
-        regs.bit(0) | (@as(u8, @intFromEnum(edge)) << 1),
-    );
+    bod.VLMCTRLA.write(.{ .VLMLVL = monitor_level });
+    bod.INTCTRL.write(.{
+        .VLMIE = 1,
+        .VLMCFG = edge,
+    });
 }
 
+/// Disable the voltage-level monitor and its interrupt.
 pub fn disable_monitor() void {
-    regs.write(regs.bod.intctrl, 0);
-    regs.write(regs.bod.vlmctrla, @intFromEnum(MonitorLevel.off));
+    bod.INTCTRL.write(.{ .VLMIE = 0, .VLMCFG = .FALLING });
+    bod.VLMCTRLA.write(.{ .VLMLVL = .OFF });
 }
 
 /// True when VDD is currently *below* the monitor threshold.
 pub fn below_threshold() bool {
-    return (regs.read(regs.bod.status) & regs.bit(regs.bod.vlms)) != 0;
+    return bod.STATUS.read().VLMS == .BELOW;
 }
 
+/// True when the configured VLM crossing was observed.
 pub fn monitor_pending() bool {
-    return (regs.read(regs.bod.intflags) & regs.bit(regs.bod.vlmif)) != 0;
+    return bod.INTFLAGS.read().VLMIF != 0;
 }
 
+/// Clear the VLM interrupt flag (write-one-to-clear).
 pub fn clear_monitor_flag() void {
-    regs.write(regs.bod.intflags, regs.bit(regs.bod.vlmif));
+    bod.INTFLAGS.write(.{ .VLMIF = 1 });
 }

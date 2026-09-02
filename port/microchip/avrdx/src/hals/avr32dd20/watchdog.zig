@@ -3,33 +3,36 @@
 //! DS40002413 section 22 "WDT - Watchdog Timer", page 215.
 //! https://ww1.microchip.com/downloads/aemDocuments/documents/MCU08/ProductDocuments/DataSheets/AVR32-16DD20-14-Complete-DataSheet-DS40002413.pdf#page=215
 
-const regs = @import("registers.zig");
+const microzig = @import("microzig");
 const ccp = @import("ccp.zig");
 
+const wdt = microzig.chip.peripherals.WDT;
+const gen = microzig.chip.types.peripherals.WDT;
+
+const CtrlABits = @TypeOf(wdt.CTRLA).underlying_type;
+
 /// Time-out period, clocked from the 1.024 kHz output of OSC32K. The bracketed
-/// times are nominal.
-pub const Period = enum(u8) {
-    off = 0x0,
-    cycles8 = 0x1, // 8 ms
-    cycles16 = 0x2, // 16 ms
-    cycles32 = 0x3, // 32 ms
-    cycles64 = 0x4, // 64 ms
-    cycles128 = 0x5, // 0.128 s
-    cycles256 = 0x6, // 0.256 s
-    cycles512 = 0x7, // 0.512 s
-    cycles1k = 0x8, // 1.0 s
-    cycles2k = 0x9, // 2.0 s
-    cycles4k = 0xA, // 4.1 s
-    cycles8k = 0xB, // 8.2 s
-};
+/// times are nominal. Values re-exported from the generated WDT_PERIOD.
+pub const Period = gen.WDT_PERIOD;
 
 /// Closed window in window mode: a `reset()` before this has elapsed is itself
 /// a fault and resets the device.
-pub const Window = Period;
+pub const Window = gen.WDT_WINDOW;
 
 /// Issue the WDR instruction.
 pub inline fn reset() void {
     asm volatile ("wdr");
+}
+
+const PeriodField = @FieldType(CtrlABits, "PERIOD");
+const WindowField = @FieldType(CtrlABits, "WINDOW");
+
+fn period_to_field(p: Period) PeriodField {
+    return @fromBackingInt(@intCast(@backingInt(p)));
+}
+
+fn window_to_field(w: Window) WindowField {
+    return @fromBackingInt(@intCast(@backingInt(w)));
 }
 
 /// Arm the watchdog in normal mode.
@@ -40,7 +43,11 @@ pub inline fn reset() void {
 /// https://ww1.microchip.com/downloads/aemDocuments/documents/MCU08/ProductDocuments/DataSheets/AVR32-16DD20-14-Complete-DataSheet-DS40002413.pdf#page=218
 pub fn configure(period: Period) void {
     while (busy()) {}
-    ccp.write_io(regs.wdt.ctrla, @intFromEnum(period));
+    const addr = comptime @intFromPtr(&wdt.CTRLA);
+    ccp.write_io(addr, @bitCast(CtrlABits{
+        .PERIOD = period_to_field(period),
+        .WINDOW = .OFF,
+    }));
 }
 
 /// Arm the watchdog in window mode: `reset()` is only accepted in the interval
@@ -50,19 +57,21 @@ pub fn configure(period: Period) void {
 /// https://ww1.microchip.com/downloads/aemDocuments/documents/MCU08/ProductDocuments/DataSheets/AVR32-16DD20-14-Complete-DataSheet-DS40002413.pdf#page=216
 pub fn configure_windowed(closed: Window, open: Period) void {
     while (busy()) {}
-    ccp.write_io(
-        regs.wdt.ctrla,
-        @intFromEnum(open) | (@as(u8, @intFromEnum(closed)) << 4),
-    );
+    const addr = comptime @intFromPtr(&wdt.CTRLA);
+    ccp.write_io(addr, @bitCast(CtrlABits{
+        .PERIOD = period_to_field(open),
+        .WINDOW = window_to_field(closed),
+    }));
 }
 
+/// Stop the watchdog inside the change-enable window.
 pub fn stop() void {
-    configure(.off);
+    configure(.OFF);
 }
 
 /// True while a CTRLA write is still synchronizing to the WDT clock domain.
 pub fn busy() bool {
-    return (regs.read(regs.wdt.status) & regs.bit(regs.wdt.syncbusy)) != 0;
+    return wdt.STATUS.read().SYNCBUSY != 0;
 }
 
 /// Freeze the current configuration until the next reset.
@@ -74,9 +83,11 @@ pub fn busy() bool {
 /// https://ww1.microchip.com/downloads/aemDocuments/documents/MCU08/ProductDocuments/DataSheets/AVR32-16DD20-14-Complete-DataSheet-DS40002413.pdf#page=217
 pub fn lock() void {
     while (busy()) {}
-    ccp.write_io(regs.wdt.status, regs.bit(regs.wdt.lock));
+    const addr = comptime @intFromPtr(&wdt.STATUS);
+    ccp.write_io(addr, 0b1000_0000);
 }
 
+/// True when fuse/WDT lock bits make the watchdog permanent.
 pub fn locked() bool {
-    return (regs.read(regs.wdt.status) & regs.bit(regs.wdt.lock)) != 0;
+    return wdt.STATUS.read().LOCK != 0;
 }

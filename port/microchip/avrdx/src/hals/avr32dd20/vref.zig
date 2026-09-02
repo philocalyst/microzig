@@ -7,34 +7,35 @@
 //! single VREF.CTRLA, AVR Dx gives the ADC, the DAC and the analog comparator
 //! one register each, so they can use different references at the same time.
 
-const regs = @import("registers.zig");
+const microzig = @import("microzig");
 
-/// The REFSEL encoding, shared by ADC0REF, DAC0REF and ACREF.
+const vref = microzig.chip.peripherals.VREF;
+const gen = microzig.chip.types.peripherals.VREF;
+
+/// The REFSEL encoding, shared by ADC0REF, DAC0REF and ACREF; re-exported
+/// from the generated layer.
 ///
 /// Note that 0x04 is not a valid encoding on this family -- the internal
 /// references jump from 2.500V to VDD.
-pub const Reference = enum(u8) {
-    internal_1v024 = 0x0,
-    internal_2v048 = 0x1,
-    internal_4v096 = 0x2,
-    internal_2v500 = 0x3,
-    /// The supply rail. Accuracy is only as good as VDD.
-    vdd = 0x5,
-    /// External reference on the VREFA pin.
-    external = 0x6,
+pub const Reference = gen.VREF_REFSEL;
 
-    /// Nominal reference voltage in millivolts, or null when it is not a
-    /// fixed known value (VDD and the external pin).
-    pub fn millivolts(r: Reference) ?u32 {
-        return switch (r) {
-            .internal_1v024 => 1024,
-            .internal_2v048 => 2048,
-            .internal_2v500 => 2500,
-            .internal_4v096 => 4096,
-            .vdd, .external => null,
-        };
-    }
-};
+/// Nominal reference voltage in millivolts for the fixed references.
+pub fn reference_millivolts(r: Reference) ?u32 {
+    return switch (r) {
+        .@"1V024" => 1024,
+        .@"2V048" => 2048,
+        .@"2V500" => 2500,
+        .@"4V096" => 4096,
+        else => null,
+    };
+}
+
+fn set_ref(comptime reg: anytype, reference: Reference, always_on: bool) void {
+    reg.write(.{
+        .REFSEL = reference,
+        .ALWAYSON = @intFromBool(always_on),
+    });
+}
 
 /// Select the ADC0 reference.
 ///
@@ -42,34 +43,30 @@ pub const Reference = enum(u8) {
 /// current for skipping the start-up delay -- see
 /// DS40002413 section 21.3.1 "Initialization", page 210.
 pub fn set_adc0_reference(reference: Reference) void {
-    regs.write(regs.vref.adc0ref, @intFromEnum(reference));
+    set_adc0_reference_always_on(reference, false);
 }
 
+/// Variant of `set_adc0_reference` with explicit always-on control.
 pub fn set_adc0_reference_always_on(reference: Reference, always_on: bool) void {
-    regs.write(
-        regs.vref.adc0ref,
-        @intFromEnum(reference) | (if (always_on) regs.bit(regs.vref.alwayson) else 0),
-    );
+    set_ref(&vref.ADC0REF, reference, always_on);
 }
 
+/// Select the DAC0 reference with a start-up delay per conversion.
 pub fn set_dac0_reference(reference: Reference) void {
-    regs.write(regs.vref.dac0ref, @intFromEnum(reference));
+    set_dac0_reference_always_on(reference, false);
 }
 
+/// Select the DAC0 reference, optionally keeping it powered always on.
 pub fn set_dac0_reference_always_on(reference: Reference, always_on: bool) void {
-    regs.write(
-        regs.vref.dac0ref,
-        @intFromEnum(reference) | (if (always_on) regs.bit(regs.vref.alwayson) else 0),
-    );
+    set_ref(&vref.DAC0REF, reference, always_on);
 }
 
+/// Select the analog comparator reference.
 pub fn set_ac_reference(reference: Reference) void {
-    regs.write(regs.vref.acref, @intFromEnum(reference));
+    set_ac_reference_always_on(reference, false);
 }
 
+/// Select the comparator reference with explicit always-on control.
 pub fn set_ac_reference_always_on(reference: Reference, always_on: bool) void {
-    regs.write(
-        regs.vref.acref,
-        @intFromEnum(reference) | (if (always_on) regs.bit(regs.vref.alwayson) else 0),
-    );
+    set_ref(&vref.ACREF, reference, always_on);
 }

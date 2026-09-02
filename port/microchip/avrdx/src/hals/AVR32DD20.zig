@@ -22,8 +22,10 @@
 //!   reference register (`VREF.ADC0REF`, not `VREF.CTRLA`).
 //! - `SIGROW.TEMPSENSE0/1` are 16-bit words, not an 8-bit gain/offset pair.
 
-// Core services
-pub const registers = @import("avr32dd20/registers.zig");
+// Core services. Register access goes through the generated layer
+// (`microzig.chip.peripherals` / `microzig.chip.types`); there is no
+// hand-written register map in this package.
+pub const capabilities = @import("avr32dd20/capabilities.zig");
 pub const ccp = @import("avr32dd20/ccp.zig");
 pub const clock = @import("avr32dd20/clock.zig");
 pub const cpuint = @import("avr32dd20/cpuint.zig");
@@ -67,10 +69,63 @@ pub const eeprom = nvmctrl.eeprom;
 pub const flash = nvmctrl.flash;
 
 /// Memory sizes, kept here for parity with the other Microchip HALs in this
-/// repository. `device.info` carries the fuller description.
+/// repository. `device.info` carries the fuller description; every value is a
+/// package capability from `capabilities.zig`.
 pub const memory = struct {
-    pub const flash_size = registers.memory.flash_size;
-    pub const sram_size = registers.memory.sram_size;
-    pub const eeprom_size = registers.memory.eeprom_size;
-    pub const flash_page_size = registers.memory.flash_page_size;
+    pub const flash_size = capabilities.flash_size;
+    pub const sram_size = capabilities.sram_size;
+    pub const eeprom_size = capabilities.eeprom_size;
+    pub const flash_page_size = capabilities.flash_page_size;
 };
+
+/// Compile-time surface gate.
+///
+/// Taking the address of a function forces the compiler to semantically
+/// analyse its whole body, so referencing every non-generic public
+/// declaration here makes *every* firmware build fail if any HAL entry point
+/// stopped compiling -- including client-mode and buffered paths no example
+/// currently exercises. The linker discards unreferenced code afterwards, so
+/// the gate costs nothing at runtime.
+fn surface_check(comptime T: type) void {
+    for (@typeInfo(T).@"struct".decl_names) |name| {
+        const decl = @field(T, name);
+        const info = @typeInfo(@TypeOf(decl));
+        if (info == .@"fn" and info.@"fn".is_generic) continue;
+        _ = &decl;
+    }
+}
+
+// The three serial/timer modules below are excluded from the default gate:
+// forcing codegen of their full surfaces trips an order-dependent LLVM-AVR
+// bitcode-emission bug in the pinned toolchain ("Invalid integer const
+// record"). They still compile wherever an example calls them; re-add
+// surface_check(twi)/(tcd)/(ccl) once the toolchain is updated.
+comptime {
+    surface_check(capabilities);
+    surface_check(ccp);
+    surface_check(clock);
+    surface_check(cpuint);
+    surface_check(device);
+    surface_check(reset);
+    surface_check(sleep);
+    surface_check(watchdog);
+    surface_check(gpio);
+    surface_check(portmux);
+    surface_check(mvio);
+    surface_check(tca0);
+    surface_check(tcb);
+    surface_check(rtc);
+    surface_check(adc);
+    surface_check(dac);
+    surface_check(ac);
+    surface_check(vref);
+    surface_check(zcd);
+    surface_check(bod);
+    surface_check(usart);
+    surface_check(spi);
+    surface_check(evsys);
+    surface_check(nvmctrl);
+    surface_check(crcscan);
+    _ = &@as(type, usart.Instance(0));
+    _ = &@as(type, usart.Instance(1));
+}

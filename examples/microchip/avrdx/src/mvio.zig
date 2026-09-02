@@ -21,46 +21,59 @@ pub fn main() void {
 
     // In single-supply mode VDDIO2 is tied to VDD and `vddio2_ok` is always
     // true, so this same code works on a board wired either way.
-    const dual_supply = hal.mvio.system_configuration() == .dual_supply;
+    const dual_supply = hal.mvio.system_configuration() == .DUAL;
 
     // VDDIO2/10 against the 1.024V reference: a 3.3V rail reads as 330 mV,
     // comfortably inside range.
     hal.adc.configure(.{
         .channel = .vddio2_div10,
-        .reference = .internal_1v024,
-        .resolution = .bits12,
-        .prescaler = .div16,
+        .reference = .@"1V024",
+        .resolution = .@"12BIT",
+        .prescaler = .DIV16,
         .configure_pin = false,
     });
 
-    // Nothing on PORTC is meaningful until the second supply is up.
-    hal.mvio.wait_for_vddio2();
-    hal.gpio.configure_output(mvio_out, false);
+    var show_fault = false;
 
     while (true) {
-        if (!hal.mvio.vddio2_ok()) {
-            // Park the MVIO pin and wait for the supply to come back rather
-            // than driving a pad with no supply behind it.
-            hal.gpio.set_direction(mvio_out, .input);
-            status.put(false);
-            hal.mvio.wait_for_vddio2();
-            hal.gpio.configure_output(mvio_out, false);
+        if (dual_supply) {
+            // Park the MVIO output low whenever its supply is absent; a
+            // floating or back-powered pad can leak into the peripheral.
+            show_fault = !hal.mvio.vddio2_ok();
+            if (show_fault) {
+                mvio_out.put(false);
+                status.put(show_fault);
+                continue;
+            }
         }
 
-        const raw = hal.adc.read_blocking();
-        const rail_mv = hal.adc.to_millivolts(raw, .internal_1v024, .bits12) *
-            hal.mvio.measurement_divisor;
+        // Drive the MVIO pin and mirror "supply present" on the LED.
+        hal.gpio.configure_output(mvio_out, true);
 
-        // Light the status LED once VDDIO2 is above 3V.
-        status.put(rail_mv > 3000);
-        mvio_out.toggle();
+        hal.adc.start();
+        while (!hal.adc.result_ready()) {}
+        const raw = hal.adc.average(hal.adc.read_raw(), .ACC16);
+        const mvio_mv = hal.adc.to_millivolts(raw, .@"1V024", .@"12BIT") * 10;
 
-        if (!dual_supply) {
-            // Single-supply board: one pass is enough to show the reading.
-            status.put(true);
-        }
+        // LED on means healthy: the measured rail is within 10% of nominal.
+        const nominal: u32 = if (dual_supply) 3300 else 5000;
+        status.put(mvio_mv * 100 > nominal * 90);
 
-        var delay: u16 = 0;
-        while (delay < 20_000) : (delay += 1) asm volatile ("nop");
+        // Slow blink cadence so the fault state is visible.
+        delay_ms(250);
     }
+}
+
+fn delay_ms(ms: u16) void {
+    var remaining = ms;
+    while (remaining > 0) : (remaining -= 1) {
+        var cycles: u16 = 1000;
+        while (cycles > 0) : (cycles -= 1) {
+            asm volatile ("nop");
+        }
+    }
+}
+
+comptime {
+    _ = microzig.export_startup();
 }

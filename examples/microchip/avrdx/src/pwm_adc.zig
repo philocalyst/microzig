@@ -10,7 +10,7 @@ const hal = microzig.hal;
 /// TCA0 WO0 in the PORTA position.
 const led = hal.gpio.pins.pa0;
 /// ADC0 AIN4.
-const pot_channel: hal.adc.Channel = .ain4_pd4;
+const pot_channel: hal.adc.PositiveChannel = .ain4_pd4;
 
 const pwm_top: u16 = 1023;
 
@@ -20,12 +20,12 @@ pub fn main() void {
 
     // WO0..WO5 land on PA0..PA5 in this position. The peripheral overrides the
     // pin value but not its direction, so PA0 still has to be an output.
-    hal.portmux.set_tca0(.porta);
+    hal.portmux.set_tca0(.PORTA);
     hal.gpio.set_direction(led, .output);
 
     hal.tca0.single.configure(.{
-        .waveform = .single_slope,
-        .clock = .div8,
+        .waveform = .SINGLESLOPE,
+        .clock = .DIV8,
         .period = pwm_top,
         .compare = .{ 0, 0, 0 },
         .enable_output = .{ true, false, false },
@@ -35,10 +35,10 @@ pub fn main() void {
     // switching on the same die.
     hal.adc.configure(.{
         .channel = pot_channel,
-        .reference = .vdd,
-        .resolution = .bits12,
-        .accumulation = .samples16,
-        .prescaler = .div16,
+        .reference = .VDD,
+        .resolution = .@"12BIT",
+        .accumulation = .ACC16,
+        .prescaler = .DIV16,
         .free_running = true,
     });
     hal.adc.start();
@@ -47,8 +47,12 @@ pub fn main() void {
         if (hal.adc.result_ready()) {
             // RES holds the sum of the burst, so divide back down before
             // scaling. 12-bit full scale is 4095, the PWM top is 1023.
-            const reading = hal.adc.average(hal.adc.read_raw(), .samples16);
+            const reading = hal.adc.average(hal.adc.read_raw(), .ACC16);
             hal.tca0.single.set_compare(.cmp0, reading >> 2);
         }
     }
+}
+
+comptime {
+    _ = microzig.export_startup();
 }

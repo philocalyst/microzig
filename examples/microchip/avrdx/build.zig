@@ -18,6 +18,7 @@ pub fn build(b: *std.Build) void {
         .{ .target = mb.ports.avrdx.chips.avr32dd20, .name = "avr32dd20_usart", .file = "src/usart.zig" },
         .{ .target = mb.ports.avrdx.chips.avr32dd20, .name = "avr32dd20_pit_sleep", .file = "src/pit_sleep.zig" },
         .{ .target = mb.ports.avrdx.chips.avr32dd20, .name = "avr32dd20_mvio", .file = "src/mvio.zig" },
+        .{ .target = mb.ports.avrdx.chips.avr32dd20, .name = "avr32dd20_abi_probe", .file = "src/abi_probe.zig" },
     };
 
     for (available_examples) |example| {
