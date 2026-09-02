@@ -9,8 +9,14 @@
 //! it is fussier than TCA and TCB -- most registers are double-buffered across
 //! a clock domain and need an explicit synchronization strobe, and ENABLE
 //! itself can only be changed when STATUS.ENRDY is set.
+//!
+//! Clock domain note (DS40002413 sections 12.3.5 and 25.3): CLK_MAIN/CPU tops
+//! out at 24 MHz on this part. The PLL (up to 48 MHz) feeds TCD0 only -- it is
+//! never selectable as CLK_MAIN. Selecting `.PLL` here therefore does not
+//! raise the CPU clock; pair with `clock.configure_pll`.
 
 const microzig = @import("microzig");
+const ccp = @import("ccp.zig");
 
 const tcd = microzig.chip.peripherals.TCD0;
 const gen = microzig.chip.types.peripherals.TCD;
@@ -175,6 +181,41 @@ pub fn release_outputs() void {
 /// 25.3.3.7 "Output Control", page 318.
 pub fn output_enable_mask() u8 {
     return tcd.FAULTCTRL.raw;
+}
+
+const FaultCtrlBits = @TypeOf(tcd.FAULTCTRL.read());
+const faultctrl_address: u16 = @intFromPtr(&tcd.FAULTCTRL);
+
+/// Write FAULTCTRL through CCP (IOREG). Enables WOA/WOB (and optional WOC/WOD
+/// when routed) and sets their default levels used under fault/override.
+///
+/// DS40002413 section 25.3.8 "Configuration Change Protection", Table 25-11,
+/// page 321: FAULTCTRL is the only TCD register that needs the CCP window.
+/// https://ww1.microchip.com/downloads/aemDocuments/documents/MCU08/ProductDocuments/DataSheets/AVR32-16DD20-14-Complete-DataSheet-DS40002413.pdf#page=321
+pub fn configure_fault_outputs(options: struct {
+    /// CMPAEN / CMPBEN: drive WOA / WOB.
+    enable_a: bool = false,
+    enable_b: bool = false,
+    /// CMPCEN / CMPDEN: drive WOC / WOD when PORTMUX routes them.
+    enable_c: bool = false,
+    enable_d: bool = false,
+    /// CMPA..CMPD: level forced onto each channel during a fault (1 = high).
+    fault_a_high: bool = false,
+    fault_b_high: bool = false,
+    fault_c_high: bool = false,
+    fault_d_high: bool = false,
+}) void {
+    const bits: FaultCtrlBits = .{
+        .CMPA = @intFromBool(options.fault_a_high),
+        .CMPB = @intFromBool(options.fault_b_high),
+        .CMPC = @intFromBool(options.fault_c_high),
+        .CMPD = @intFromBool(options.fault_d_high),
+        .CMPAEN = @intFromBool(options.enable_a),
+        .CMPBEN = @intFromBool(options.enable_b),
+        .CMPCEN = @intFromBool(options.enable_c),
+        .CMPDEN = @intFromBool(options.enable_d),
+    };
+    ccp.write_io(faultctrl_address, @bitCast(bits));
 }
 
 /// Interrupt once per completed PWM cycle.
@@ -399,4 +440,31 @@ pub fn clear_interrupt_flag(comptime source: Source) void {
 pub fn pwm_activity() struct { a: bool, b: bool } {
     const s = tcd.STATUS.read();
     return .{ .a = s.PWMACTA != 0, .b = s.PWMACTB != 0 };
+}
+
+// -- Debug / dither -----------------------------------------------------------
+
+/// Keep TCD counting while the CPU is halted in debug, and optionally force
+/// a fault-detect action on halt.
+///
+/// DS40002413 section 25.3.7 "Debug Operation" (DBGCTRL.DBGRUN / FAULTDET).
+/// https://ww1.microchip.com/downloads/aemDocuments/documents/MCU08/ProductDocuments/DataSheets/AVR32-16DD20-14-Complete-DataSheet-DS40002413.pdf#page=320
+pub fn set_debug_run(enable: bool, options: struct { fault_on_break: bool = false }) void {
+    tcd.DBGCTRL.write(.{
+        .DBGRUN = @intFromBool(enable),
+        .FAULTDET = @intFromBool(options.fault_on_break),
+    });
+}
+
+/// DITCTRL.DITHERSEL -- which edge(s) receive the dither offset.
+pub const DitherSelect = gen.TCD_DITHERSEL;
+
+/// Configure on-time / dead-time dithering (DITCTRL + DITVAL).
+///
+/// DS40002413 section 25.3.3.5 "Dithering", page 315: a 4-bit fractional
+/// offset spreads the average duty/dead-time without raising the counter
+/// resolution.
+pub fn configure_dither(select: DitherSelect, value: u4) void {
+    tcd.DITCTRL.write(.{ .DITHERSEL = select });
+    tcd.DITVAL.write(.{ .DITHER = value });
 }

@@ -194,7 +194,6 @@ test "truth tables" {
 //
 // DS40002413 section 31.3.2 "Interrupts", page 469.
 // https://ww1.microchip.com/downloads/aemDocuments/documents/MCU08/ProductDocuments/DataSheets/AVR32-16DD20-14-Complete-DataSheet-DS40002413.pdf#page=469
-// https://ww1.microchip.com/downloads/aemDocuments/documents/MCU08/ProductDocuments/DataSheets/AVR32-16DD20-14-Complete-DataSheet-DS40002413.pdf#page=469
 //
 // Each LUT output feeds one edge detector whose mode is set independently;
 // all four flags OR into the single CCL_INT vector, so a handler must consult

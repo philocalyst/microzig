@@ -191,6 +191,14 @@ pub fn Instance(comptime id: u1) type {
         pub fn set_sync_update(enable: bool) void {
             t.CTRLA.modify(.{ .SYNCUPD = @intFromBool(enable) });
         }
+
+        /// Keep the counter running while the CPU is halted in debug
+        /// (DBGCTRL.DBGRUN).
+        ///
+        /// DS40002413 section 24.3.4 "Debug Operation", page 283.
+        pub fn set_debug_run(enable: bool) void {
+            t.DBGCTRL.write(.{ .DBGRUN = @intFromBool(enable) });
+        }
     };
 }
 

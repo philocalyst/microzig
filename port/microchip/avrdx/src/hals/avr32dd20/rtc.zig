@@ -7,6 +7,15 @@
 //! The RTC and the PIT are two independent counters fed from the same CLK_RTC,
 //! selected once via `set_clock_source`. The PIT is the one that survives
 //! power-down sleep, which makes it the usual choice for a periodic wake-up.
+//!
+//! Events (section 26.7): the RTC has no EVTCTRL register. Overflow, compare,
+//! and PIT period markers are *generators* into EVSYS (`RTC_OVF`, `RTC_CMP`,
+//! `RTC_PIT_DIVxxxx` in each channel's generated enum). Wire them with
+//! `evsys.set_generator`.
+//!
+//! Debug (section 26.11): `set_debug_run` / `pit.set_debug_run` control
+//! DBGCTRL.DBGRUN and PITDBGCTRL.DBGRUN so the counters keep ticking while
+//! the CPU is halted by the debugger.
 
 const microzig = @import("microzig");
 
@@ -175,6 +184,17 @@ pub fn set_calibration(error_value: u7, negative: bool) void {
     rtc.CTRLA.modify(.{ .CORREN = 1 });
 }
 
+// -- Debug -------------------------------------------------------------------
+//
+// DS40002413 section 26.11 "Debug Operation", page 352.
+// https://ww1.microchip.com/downloads/aemDocuments/documents/MCU08/ProductDocuments/DataSheets/AVR32-16DD20-14-Complete-DataSheet-DS40002413.pdf#page=352
+
+/// Keep the RTC counter running while the CPU is halted in debug
+/// (DBGCTRL.DBGRUN).
+pub fn set_debug_run(enable: bool) void {
+    rtc.DBGCTRL.write(.{ .DBGRUN = @intFromBool(enable) });
+}
+
 // -- PIT ---------------------------------------------------------------------
 
 /// Periodic Interrupt Timer.
@@ -225,6 +245,12 @@ pub const pit = struct {
 
     pub fn clear_interrupt() void {
         rtc.PITINTFLAGS.write(.{ .PI = 1 });
+    }
+
+    /// Keep the PIT running while the CPU is halted in debug
+    /// (PITDBGCTRL.DBGRUN). Independent of the RTC counter's DBGCTRL.
+    pub fn set_debug_run(enable: bool) void {
+        rtc.PITDBGCTRL.write(.{ .DBGRUN = @intFromBool(enable) });
     }
 
     /// Block until the next PIT tick, polling the flag.

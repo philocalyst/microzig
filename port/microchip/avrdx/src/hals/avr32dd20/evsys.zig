@@ -12,8 +12,10 @@
 //! and the encodings are not dense (PORTD on channels 2/3 starts at 0x4C).
 //! Each channel is therefore typed against its own generated value group
 //! (`EVSYS_CHANNELn`), which also carries the TCD0 sources the older
-//! hand-written table omitted (`CMPBCLR`, `CMPASET`, `CMPBSET`, `PROGEV`,
-//! 0xB0..0xB3).
+//! hand-written table omitted (`TCD0_CMPBCLR`, `TCD0_CMPASET`, `TCD0_CMPBSET`,
+//! `TCD0_PROGEV` = 0xB0..0xB3 in every channel's ATDF value-group). Those four
+//! encodings match DS40002413 / ATDF exactly; there is no separate TCD0_OVF
+//! generator -- cycle/edge events are the compare and PROGEV pulses.
 
 const std = @import("std");
 const microzig = @import("microzig");

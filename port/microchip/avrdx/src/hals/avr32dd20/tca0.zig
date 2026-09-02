@@ -59,10 +59,6 @@ pub const Waveform = gen.TCA_SINGLE_WGMODE;
 /// on `portmux.set_tca0`.
 pub const Channel = enum(u2) { cmp0 = 0, cmp1 = 1, cmp2 = 2 };
 
-fn channel_bit(comptime n: comptime_int) u8 {
-    return @as(u8, 1) << (4 + n);
-}
-
 /// Configuration for normal 16-bit timer/PWM operation.
 pub const SingleConfig = struct {
     waveform: Waveform = .SINGLESLOPE,
@@ -138,13 +134,9 @@ pub const single = struct {
 
     pub fn set_output_enabled(channel: Channel, enable: bool) void {
         switch (channel) {
-            inline else => |ch| {
-                const field = comptime std.meta.stringToEnum(
-                    std.meta.FieldEnum(@TypeOf(tca0.SINGLE.CTRLB.read())),
-                    "CMP" ++ @tagName(ch)[3] ++ "EN",
-                ).?;
-                tca0.SINGLE.CTRLB.modify(@unionInit(@TypeOf(tca0.SINGLE.CTRLB.read()), @tagName(field), @intFromBool(enable)));
-            },
+            .cmp0 => tca0.SINGLE.CTRLB.modify(.{ .CMP0EN = @intFromBool(enable) }),
+            .cmp1 => tca0.SINGLE.CTRLB.modify(.{ .CMP1EN = @intFromBool(enable) }),
+            .cmp2 => tca0.SINGLE.CTRLB.modify(.{ .CMP2EN = @intFromBool(enable) }),
         }
     }
 
@@ -211,6 +203,37 @@ pub const single = struct {
         }
     }
 
+    /// EVCTRL.EVACTA encodings.
+    pub const EventActionA = gen.TCA_SINGLE_EVACTA;
+    /// EVCTRL.EVACTB encodings.
+    pub const EventActionB = gen.TCA_SINGLE_EVACTB;
+
+    /// Configure single-mode event actions (EVCTRL).
+    ///
+    /// DS40002413 section 23.3.3.4 "Event Control", page 230: CNTAEI/CNTBEI
+    /// arm the two event inputs; EVACTA/EVACTB choose count/restart behaviour.
+    /// Wire the inputs with `evsys.connect(.tca0_count_a/.tca0_count_b, ...)`.
+    /// https://ww1.microchip.com/downloads/aemDocuments/documents/MCU08/ProductDocuments/DataSheets/AVR32-16DD20-14-Complete-DataSheet-DS40002413.pdf#page=230
+    pub fn configure_events(options: struct {
+        enable_a: bool = false,
+        action_a: EventActionA = .CNT_POSEDGE,
+        enable_b: bool = false,
+        action_b: EventActionB = .NONE,
+    }) void {
+        tca0.SINGLE.EVCTRL.write(.{
+            .CNTAEI = @intFromBool(options.enable_a),
+            .EVACTA = options.action_a,
+            .CNTBEI = @intFromBool(options.enable_b),
+            .EVACTB = options.action_b,
+        });
+    }
+
+    /// Keep the counter running while the CPU is halted in debug
+    /// (DBGCTRL.DBGRUN).
+    pub fn set_debug_run(enable: bool) void {
+        tca0.SINGLE.DBGCTRL.write(.{ .DBGRUN = @intFromBool(enable) });
+    }
+
     /// Largest TOP for which `target_hz` is reachable with `clock`.
     ///
     /// The PWM frequency in single-slope mode is CLK_TCA / (PER + 1), so
@@ -239,7 +262,6 @@ pub const SplitConfig = struct {
     run_standby: bool = false,
 };
 
-const std = @import("std");
 
 /// API for the SPLIT register set (two 8-bit PWM groups).
 pub const split = struct {
@@ -338,5 +360,11 @@ pub const split = struct {
             .low => tca0.SPLIT.INTFLAGS.write(.{ .LUNF = 1, .HUNF = 0, .LCMP0 = 0, .LCMP1 = 0, .LCMP2 = 0 }),
             .high => tca0.SPLIT.INTFLAGS.write(.{ .LUNF = 0, .HUNF = 1, .LCMP0 = 0, .LCMP1 = 0, .LCMP2 = 0 }),
         }
+    }
+
+    /// Keep both halves running while the CPU is halted in debug
+    /// (DBGCTRL.DBGRUN). Same register as single mode.
+    pub fn set_debug_run(enable: bool) void {
+        tca0.SPLIT.DBGCTRL.write(.{ .DBGRUN = @intFromBool(enable) });
     }
 };
