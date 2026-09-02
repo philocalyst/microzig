@@ -6,13 +6,18 @@
 //! Route the pins with `portmux.set_spi0` before calling `configure`; the
 //! default position is MOSI PA4, MISO PA5, SCK PA6, SS PA7.
 //!
-//! The client side (SS handling, buffered-mode FIFO flags) is not wrapped yet;
-//! reach it through `microzig.chip.peripherals.SPI0` in the meantime.
+//! Host (`configure`) and client (`configure_client`) paths are wrapped, plus
+//! buffered-mode byte helpers. `transfer` / `write_collision` assume normal
+//! mode (CTRLB.BUFEN=0); use the `*_buffered` helpers when BUFEN=1. Mode-
+//! discriminated config unions that make the wrong helper unrepresentable are
+//! still incomplete.
 
 const microzig = @import("microzig");
 
 const spi = microzig.chip.peripherals.SPI0;
 const gen = microzig.chip.types.peripherals.SPI;
+
+const serial_math = @import("serial_math.zig");
 
 const CtrlABits = @TypeOf(spi.CTRLA.read());
 const CtrlBBits = @TypeOf(spi.CTRLB.read());
@@ -61,8 +66,7 @@ pub const Config = struct {
 
 /// Resulting SCK frequency for a given peripheral clock.
 pub fn sck_hz(clk_per_hz: u32, prescaler: Prescaler, double_speed: bool) u32 {
-    const d: u32 = prescaler_divisor(prescaler);
-    return if (double_speed) clk_per_hz / (d / 2) else clk_per_hz / d;
+    return serial_math.spi_sck_hz(clk_per_hz, prescaler_divisor(prescaler), double_speed);
 }
 
 /// Configure and enable SPI0 as host.

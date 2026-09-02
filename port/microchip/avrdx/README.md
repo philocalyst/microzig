@@ -45,9 +45,9 @@ error, not a silent write to nothing.
 | `vref` | Per-consumer voltage references |
 | `zcd` | ZCD3 zero-cross detector |
 | `bod` | Brown-out detector and voltage level monitor |
-| `usart` | USART0/USART1, fractional baud generator, `std.Io.Writer` |
-| `spi` | SPI0 host and client |
-| `twi` | TWI0 host, with `write`/`read`/`write_read` transactions |
+| `usart` | USART0/USART1 via `Instance(id)`, fractional + sync baud, `std.Io.Writer`/`Reader` |
+| `spi` | SPI0 host/client, normal + buffered helpers |
+| `twi` | TWI0 host/client, Dual mode (`ClientConfig.dual_mode`), write/read/write_read |
 | `ccl` | Four LUTs, sequential logic, common truth tables |
 | `evsys` | Six event channels with per-channel pin generators |
 | `nvmctrl` | EEPROM, flash self-programming, user row, flash mapping |

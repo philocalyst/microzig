@@ -10,8 +10,8 @@ comptime {
     _ = @import("ccp.zig");
     _ = @import("adc_math.zig");
     _ = @import("ccl.zig");
-    _ = @import("capabilities.zig");
     _ = @import("nvmctrl.zig");
+    _ = @import("serial_math.zig");
 }
 
 test {

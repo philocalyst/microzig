@@ -15,6 +15,8 @@ const Io = std.Io;
 const chip = microzig.chip.peripherals;
 const gen = microzig.chip.types.peripherals.USART;
 
+const serial_math = @import("serial_math.zig");
+
 fn instance(comptime id: u1) *volatile gen {
     return switch (id) {
         0 => chip.USART0,
@@ -70,24 +72,23 @@ pub const Config = struct {
     loopback: bool = false,
 };
 
-/// Compute the BAUD register value.
+/// Compute the BAUD register value for asynchronous / IRCOM modes.
 ///
 /// DS40002413 section 27.3.2.2.1 "The Fractional Baud Rate Generator",
 /// page 373: BAUD is a 16-bit value with 6 fractional bits, so
-/// `BAUD = 64 * f_CLK_PER / (S * f_BAUD)` where S is the oversampling rate.
-/// The register must be at least 64 (i.e. a divider of at least 1).
+/// `BAUD = 64 * f_CLK_PER / (S * f_BAUD)` where S is the oversampling rate
+/// (16 in NORMAL/auto-baud, 8 in CLK2X). The register must be at least 64.
 /// https://ww1.microchip.com/downloads/aemDocuments/documents/MCU08/ProductDocuments/DataSheets/AVR32-16DD20-14-Complete-DataSheet-DS40002413.pdf#page=373
 ///
 /// Returns null when the request is unreachable at this clock.
 pub fn baud_register(clk_per_hz: u32, baud_rate: u32, receiver_mode: ReceiverMode) ?u16 {
-    if (baud_rate == 0) return null;
-    const samples = oversampling(receiver_mode);
-    const denominator = @as(u64, samples) * baud_rate;
-    // Round to nearest rather than truncating; at low clocks the difference is
-    // a whole percent of baud error.
-    const value = (@as(u64, clk_per_hz) * 64 + denominator / 2) / denominator;
-    if (value < 64 or value > 0xFFFF) return null;
-    return @intCast(value);
+    return serial_math.usart_baud_async(clk_per_hz, baud_rate, oversampling(receiver_mode));
+}
+
+/// Synchronous / MSPI host baud: only BAUD[15:6] counts, fractional bits must
+/// be zero, and S = 2 (DS40002413 section 27.3.2.2.1 Table 27-1).
+pub fn baud_register_synchronous(clk_per_hz: u32, baud_rate: u32) ?u16 {
+    return serial_math.usart_baud_sync(clk_per_hz, baud_rate);
 }
 
 /// Typed driver for USART0 or USART1.
@@ -105,17 +106,18 @@ pub fn Instance(comptime id: u1) type {
         /// expressed at `config.clk_per_hz` -- silently running at the wrong
         /// speed is worse than refusing.
         pub fn configure(config: Config) error{UnreachableBaudRate}!void {
-            const baud = baud_register(config.clk_per_hz, config.baud_rate, config.receiver_mode) orelse
-                return error.UnreachableBaudRate;
-
-            u.CTRLB.write(.{
-                .MPCM = 0,
-                .RXMODE = config.receiver_mode,
-                .ODME = @intFromBool(config.open_drain),
-                .SFDEN = 0,
-                .TXEN = 0,
-                .RXEN = 0,
-            });
+            // DS40002413 section 27.3.1 "Initialization": BAUD, then CTRLC
+            // (frame/mode), then enable TXEN/RXEN in CTRLB. Enabling before
+            // BAUD/CTRLC can emit a garbled first character.
+            const baud: u16 = switch (config.mode) {
+                .ASYNCHRONOUS, .IRCOM => baud_register(config.clk_per_hz, config.baud_rate, config.receiver_mode) orelse
+                    return error.UnreachableBaudRate,
+                // Sync / MSPI use the integer-only formula (S=2). MSPI still
+                // shares the NORMAL CTRLC field layout in this HAL -- UCPHA/
+                // UDORD are incomplete (ATDF mode-qualified; regz skipped them).
+                .SYNCHRONOUS, .MSPI => baud_register_synchronous(config.clk_per_hz, config.baud_rate) orelse
+                    return error.UnreachableBaudRate,
+            };
 
             u.CTRLA.write(.{
                 .RS485 = @fromBackingInt(@intCast(@intFromBool(config.rs485))),
@@ -127,13 +129,14 @@ pub fn Instance(comptime id: u1) type {
                 .RXCIE = 0,
             });
 
+            // Hold TX/RX off while programming baud and frame format.
             u.CTRLB.write(.{
                 .MPCM = 0,
                 .RXMODE = config.receiver_mode,
                 .ODME = @intFromBool(config.open_drain),
                 .SFDEN = 0,
-                .TXEN = @intFromBool(config.enable_tx),
-                .RXEN = @intFromBool(config.enable_rx),
+                .TXEN = 0,
+                .RXEN = 0,
             });
 
             u.CTRLC.write(.{
@@ -144,6 +147,15 @@ pub fn Instance(comptime id: u1) type {
             });
 
             u.BAUD = baud;
+
+            u.CTRLB.write(.{
+                .MPCM = 0,
+                .RXMODE = config.receiver_mode,
+                .ODME = @intFromBool(config.open_drain),
+                .SFDEN = 0,
+                .TXEN = @intFromBool(config.enable_tx),
+                .RXEN = @intFromBool(config.enable_rx),
+            });
         }
 
         /// Change the baud rate on a running USART.

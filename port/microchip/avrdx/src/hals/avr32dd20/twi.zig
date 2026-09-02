@@ -5,11 +5,18 @@
 //!
 //! Route the pins with `portmux.set_twi0` first. The default position is
 //! SDA PA2 / SCL PA3, with the dual-mode client on PC2/PC3.
+//!
+//! Simultaneous host+client on separate pins is a package capability
+//! (peripheral overview note 1) and requires Dual mode: set
+//! `ClientConfig.dual_mode` so `DUALCTRL.ENABLE` is written after FMPEN/
+//! SDAHOLD (DS40002413 section 29.3.3.4).
 
 const microzig = @import("microzig");
 
 const twi = microzig.chip.peripherals.TWI0;
 const gen = microzig.chip.types.peripherals.TWI;
+
+const serial_math = @import("serial_math.zig");
 
 /// MSTATUS.BUSSTATE - the host's view of the bus.
 ///
@@ -65,21 +72,9 @@ pub const Config = struct {
 /// too fast to represent, or so slow that BAUD overflows a byte.
 /// https://ww1.microchip.com/downloads/aemDocuments/documents/MCU08/ProductDocuments/DataSheets/AVR32-16DD20-14-Complete-DataSheet-DS40002413.pdf#page=424
 pub fn baud_register(clk_per_hz: u32, scl_hz: u32, rise_time_ns: u32) ?u8 {
-    if (scl_hz == 0) return null;
-
-    // f_CLK_PER * T_RISE, with T_RISE in nanoseconds, in units of clock
-    // cycles. Computed in u32: clk_per_hz <= 48 MHz keeps the intermediate
-    // under 2^32 for any realistic rise time (< 90 us).
-    const rise_cycles = (clk_per_hz / 1000 * rise_time_ns + 999_000) / 1_000_000;
-    const total = clk_per_hz / scl_hz;
-    if (total < 10 + rise_cycles) return null;
-
-    // Round UP: the datasheet requires a bus clock "equal or less than" the
-    // mode limit (section 29.3.2.2.1), and flooring here measured +7% SCL
-    // overshoot at a 1 MHz target from a 24 MHz peripheral clock.
-    const value = (total - 10 - rise_cycles + 1) / 2;
-    if (value > 0xFF or value == 0) return null;
-    return @intCast(value);
+    // Pure math lives in serial_math so host tests pin the ceil-divide that
+    // keeps f_SCL equal-or-less than the mode limit (section 29.3.2.2.1).
+    return serial_math.twi_baud(clk_per_hz, scl_hz, rise_time_ns);
 }
 
 /// Configure and enable the host.
@@ -286,10 +281,19 @@ pub const ClientConfig = struct {
     /// Respond to the general call address 0x00 as well.
     respond_to_general_call: bool = false,
     sda_hold: SdaHold = .OFF,
+    /// DUALCTRL.FMPEN when `dual_mode` is set. Ignored for shared-pin client
+    /// (CTRLA.FMPEN from `configure` applies instead).
+    fast_mode_plus: bool = false,
     smart_mode: bool = false,
-    /// SCTRLA.PMEN - match only on address (no general call), used together
-    /// with `address_mask`.
+    /// SCTRLA.PMEN - address recognition mode; used together with
+    /// `address_mask`.
     promiscuous: bool = false,
+    /// Enable Dual mode (DUALCTRL.ENABLE): client signal conditioning comes
+    /// from DUALCTRL and the client rides the PORTMUX dual-mode pins while
+    /// the host keeps the CTRLA pins. Required for simultaneous host+client
+    /// on separate buses (DS40002413 section 29.3.3.4; peripheral overview
+    /// note 1). Leave false for a shared-pin client on the host's wires.
+    dual_mode: bool = false,
     enable_data_interrupt: bool = true,
     enable_address_interrupt: bool = true,
     enable_stop_interrupt: bool = false,
@@ -297,13 +301,16 @@ pub const ClientConfig = struct {
 
 /// Enable the client.
 ///
-/// In single-supply wiring both host and client share the CTRLA-configured
-/// pins; pass this together with `configure` to run host and client
-/// *simultaneously* on separate pins: DUALCTRL then configures the client
-/// while CTRLA keeps configuring the host (DS40002413 section 29.3.3.4 "Dual
-/// Mode", page 432). SDAHOLD/FMPEN must be in their final values before that
-/// enable bit is set, which this function's ordering guarantees.
+/// Shared-pin client (`dual_mode = false`): SCTRLA enables the client on the
+/// same wires CTRLA conditions for the host.
+///
+/// Dual mode (`dual_mode = true`): CTRLA keeps configuring the host pins and
+/// DUALCTRL configures the client on the PORTMUX dual-mode pins so host and
+/// client run simultaneously on separate buses (DS40002413 section 29.3.3.4
+/// "Dual Mode", page 432; peripheral overview note 1). FMPEN/SDAHOLD are
+/// programmed before DUALCTRL.ENABLE, as the datasheet requires.
 /// https://ww1.microchip.com/downloads/aemDocuments/documents/MCU08/ProductDocuments/DataSheets/AVR32-16DD20-14-Complete-DataSheet-DS40002413.pdf#page=432
+/// https://onlinedocs.microchip.com/oxy/GUID-417F9387-DF9B-42E5-AA91-108A8C58208B-en-US-8/GUID-F94E51A5-03D0-474D-820B-5DF1CA77A1BD.html
 pub fn configure_client(config: ClientConfig) void {
     const gce: u8 = @intFromBool(config.respond_to_general_call);
     twi.SADDR.write(.{ .ADDR = (@as(u8, config.address) << 1) | gce });
@@ -311,9 +318,10 @@ pub fn configure_client(config: ClientConfig) void {
         .ADDREN = @intFromBool(config.address_mask != 0),
         .ADDRMASK = config.address_mask,
     });
+    // Conditioning first with ENABLE clear; raise Dual-mode ENABLE last.
     twi.DUALCTRL.write(.{
         .ENABLE = 0,
-        .FMPEN = .OFF,
+        .FMPEN = if (config.fast_mode_plus) .ON else .OFF,
         .SDAHOLD = config.sda_hold,
         .INPUTLVL = .I2C,
     });
@@ -326,11 +334,16 @@ pub fn configure_client(config: ClientConfig) void {
         .DIEN = @intFromBool(config.enable_data_interrupt),
     });
     twi.SCTRLA.modify(.{ .ENABLE = 1 });
+    if (config.dual_mode) {
+        twi.DUALCTRL.modify(.{ .ENABLE = 1 });
+    }
 }
 
 /// Disable client operation; the host side keeps running.
+/// Also clears DUALCTRL.ENABLE so a prior Dual-mode client releases its pins.
 pub fn disable_client() void {
     twi.SCTRLA.modify(.{ .ENABLE = 0 });
+    twi.DUALCTRL.modify(.{ .ENABLE = 0 });
 }
 
 /// One client event, decoded from SSTATUS. Reuses the host-side `Direction`
