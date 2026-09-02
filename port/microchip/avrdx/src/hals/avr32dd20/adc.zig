@@ -32,8 +32,9 @@ const gen = microzig.chip.types.peripherals.ADC;
 /// Input", page 511:
 /// https://ww1.microchip.com/downloads/aemDocuments/documents/MCU08/ProductDocuments/DataSheets/AVR32-16DD20-14-Complete-DataSheet-DS40002413.pdf#page=511
 ///
-/// The PC channels (AIN29..AIN31) sample pads powered from VDDIO2; they only
-/// exist when MVIO is enabled by fuse -- see `check_mvio` below.
+/// The PC channels (AIN29..AIN31) sit on the MVIO port; DS40002413 note 2
+/// (peripheral overview) makes them ADC-legal only when MVIO is *disabled*
+/// (SYSCFG1.MVSYSCFG = SINGLE) -- see `check_mvio` below.
 pub const PositiveChannel = enum(u8) {
     ain4_pd4 = 0x04,
     ain5_pd5 = 0x05,
@@ -45,11 +46,11 @@ pub const PositiveChannel = enum(u8) {
     ain25_pa5 = 0x19,
     ain26_pa6 = 0x1A,
     ain27_pa7 = 0x1B,
-    /// VDDIO2-supplied pad; compile-time gated by the MVIO fuse setting.
+    /// PORTC/MVIO pad; legal for ADC only when MVIO is fuse-disabled (SINGLE).
     ain29_pc1 = 0x1D,
-    /// VDDIO2-supplied pad; compile-time gated by the MVIO fuse setting.
+    /// PORTC/MVIO pad; legal for ADC only when MVIO is fuse-disabled (SINGLE).
     ain30_pc2 = 0x1E,
-    /// VDDIO2-supplied pad; compile-time gated by the MVIO fuse setting.
+    /// PORTC/MVIO pad; legal for ADC only when MVIO is fuse-disabled (SINGLE).
     ain31_pc3 = 0x1F,
 
     /// Internal ground, for offset measurement.
@@ -66,22 +67,22 @@ pub const PositiveChannel = enum(u8) {
     /// The AC0 DAC reference.
     dacref0 = 0x49,
 
-    /// Compile-time MVIO gate.
+    /// Compile-time MVIO gate for PORTC ADC channels.
     ///
-    /// PC1..PC3 hang off VDDIO2, so their analog channels do not exist unless
-    /// the board was fused dual-supply (FUSE.SYSCFG1.MVSYSCFG = DUAL) and this
-    /// build says so via `capabilities.mvio_enabled_by_fuse`.
+    /// DS40002413 peripheral-overview note 2: ADC inputs on MVIO pins (PORTC)
+    /// are available only when MVIO is disabled (FUSE.SYSCFG1.MVSYSCFG =
+    /// SINGLE). Dual-supply builds (`capabilities.mvio_enabled_by_fuse`) must
+    /// not select AIN29..AIN31.
     ///
-    /// Call this yourself at comptime to hard-gate a static channel choice:
-    /// `comptime PositiveChannel.ain29_pc1.check_mvio();` fails the build on
-    /// single-supply targets. The driver's own runtime gate
-    /// (`assert_mvio_channel_ok`) covers dynamic selection either way.
+    /// Call at comptime for a static choice:
+    /// `comptime PositiveChannel.ain29_pc1.check_mvio();`
+    /// Runtime selection goes through `assert_mvio_channel_ok`.
     ///
-    /// DS40002413B section 19 "MVIO", page 192.
+    /// https://onlinedocs.microchip.com/oxy/GUID-417F9387-DF9B-42E5-AA91-108A8C58208B-en-US-8/GUID-F94E51A5-03D0-474D-820B-5DF1CA77A1BD.html
     pub fn check_mvio(self: PositiveChannel) void {
-        if (!capabilities.mvio_enabled_by_fuse) {
+        if (capabilities.mvio_enabled_by_fuse) {
             switch (self) {
-                .ain29_pc1, .ain30_pc2, .ain31_pc3 => @compileError("channel samples a VDDIO2 (MVIO) pin but this build targets a single-supply board"),
+                .ain29_pc1, .ain30_pc2, .ain31_pc3 => @compileError("ADC on PORTC (AIN29..AIN31) requires MVSYSCFG=SINGLE; this build has MVIO enabled"),
                 else => {},
             }
         }
@@ -127,8 +128,11 @@ pub const NegativeChannel = enum(u8) {
     ain25_pa5 = 0x19,
     ain26_pa6 = 0x1A,
     ain27_pa7 = 0x1B,
+    /// PORTC/MVIO pad; legal for ADC only when MVIO is fuse-disabled (SINGLE).
     ain29_pc1 = 0x1D,
+    /// PORTC/MVIO pad; legal for ADC only when MVIO is fuse-disabled (SINGLE).
     ain30_pc2 = 0x1E,
+    /// PORTC/MVIO pad; legal for ADC only when MVIO is fuse-disabled (SINGLE).
     ain31_pc3 = 0x1F,
 
     /// Measure against ground: the differential encoding of a single-ended
@@ -136,6 +140,36 @@ pub const NegativeChannel = enum(u8) {
     ground = 0x40,
     /// DAC0 output as the subtracted source.
     dac0 = 0x48,
+
+    /// Same PORTC rule as `PositiveChannel.check_mvio`.
+    pub fn check_mvio(self: NegativeChannel) void {
+        if (capabilities.mvio_enabled_by_fuse) {
+            switch (self) {
+                .ain29_pc1, .ain30_pc2, .ain31_pc3 => @compileError("ADC on PORTC (AIN29..AIN31) requires MVSYSCFG=SINGLE; this build has MVIO enabled"),
+                else => {},
+            }
+        }
+    }
+
+    /// The GPIO pad this channel measures, or null for internal sources.
+    pub fn pin(channel: NegativeChannel) ?gpio.Pin {
+        return switch (channel) {
+            .ain4_pd4 => gpio.pins.pd4,
+            .ain5_pd5 => gpio.pins.pd5,
+            .ain6_pd6 => gpio.pins.pd6,
+            .ain7_pd7 => gpio.pins.pd7,
+            .ain22_pa2 => gpio.pins.pa2,
+            .ain23_pa3 => gpio.pins.pa3,
+            .ain24_pa4 => gpio.pins.pa4,
+            .ain25_pa5 => gpio.pins.pa5,
+            .ain26_pa6 => gpio.pins.pa6,
+            .ain27_pa7 => gpio.pins.pa7,
+            .ain29_pc1 => gpio.pins.pc1,
+            .ain30_pc2 => gpio.pins.pc2,
+            .ain31_pc3 => gpio.pins.pc3,
+            else => null,
+        };
+    }
 };
 
 /// ADC0.CTRLA.RESSEL.
@@ -235,6 +269,12 @@ pub const Config = struct {
     /// Disable the digital input buffer of the used pin, as the datasheet
     /// requires for analog inputs.
     configure_pin: bool = true,
+
+    /// Comptime rejection of illegal PORTC channels for this build's MVIO fuse.
+    pub fn validate(comptime config: Config) void {
+        comptime config.channel.check_mvio();
+        comptime config.negative_channel.check_mvio();
+    }
 };
 
 /// Configure and enable the ADC.
@@ -244,6 +284,7 @@ pub const Config = struct {
 /// https://ww1.microchip.com/downloads/aemDocuments/documents/MCU08/ProductDocuments/DataSheets/AVR32-16DD20-14-Complete-DataSheet-DS40002413.pdf#page=492
 pub fn configure(config: Config) void {
     assert_mvio_channel_ok(config.channel);
+    assert_mvio_negative_channel_ok(config.negative_channel);
 
     adc.CTRLA.write(.{
         .ENABLE = 0,
@@ -259,7 +300,7 @@ pub fn configure(config: Config) void {
     if (config.configure_pin) {
         if (config.channel.pin()) |p| disable_digital_input(p);
         if (config.conversion_mode == .DIFF) {
-            if (negative_pin(config.negative_channel)) |p| disable_digital_input(p);
+            if (config.negative_channel.pin()) |p| disable_digital_input(p);
         }
     }
 
@@ -284,33 +325,22 @@ pub fn configure(config: Config) void {
     });
 }
 
-fn negative_pin(channel: NegativeChannel) ?gpio.Pin {
-    return switch (channel) {
-        .ain4_pd4 => gpio.pins.pd4,
-        .ain5_pd5 => gpio.pins.pd5,
-        .ain6_pd6 => gpio.pins.pd6,
-        .ain7_pd7 => gpio.pins.pd7,
-        .ain22_pa2 => gpio.pins.pa2,
-        .ain23_pa3 => gpio.pins.pa3,
-        .ain24_pa4 => gpio.pins.pa4,
-        .ain25_pa5 => gpio.pins.pa5,
-        .ain26_pa6 => gpio.pins.pa6,
-        .ain27_pa7 => gpio.pins.pa7,
-        .ain29_pc1 => gpio.pins.pc1,
-        .ain30_pc2 => gpio.pins.pc2,
-        .ain31_pc3 => gpio.pins.pc3,
-        else => null,
-    };
+/// Runtime half of the MVIO gate: dual-supply builds
+/// (`capabilities.mvio_enabled_by_fuse`) must not select PORTC ADC channels
+/// (DS40002413 note 2). Comptime-known choices use `check_mvio` instead.
+fn assert_mvio_channel_ok(channel: PositiveChannel) void {
+    if (capabilities.mvio_enabled_by_fuse) {
+        switch (channel) {
+            .ain29_pc1, .ain30_pc2, .ain31_pc3 => @panic("ADC on PORTC (AIN29..AIN31) requires MVSYSCFG=SINGLE; MVIO is enabled in this build"),
+            else => {},
+        }
+    }
 }
 
-/// Runtime half of the MVIO gate: in a single-supply build
-/// (`capabilities.mvio_enabled_by_fuse == false`) selecting a VDDIO2-side
-/// channel panics instead of measuring nothing. The compile-error variant of
-/// this gate exists for comptime-known channels via `check_mvio_comptime`.
-fn assert_mvio_channel_ok(channel: PositiveChannel) void {
-    if (!capabilities.mvio_enabled_by_fuse) {
+fn assert_mvio_negative_channel_ok(channel: NegativeChannel) void {
+    if (capabilities.mvio_enabled_by_fuse) {
         switch (channel) {
-            .ain29_pc1, .ain30_pc2, .ain31_pc3 => @panic("ADC channel on a VDDIO2 (PC) pin was selected in a single-supply build"),
+            .ain29_pc1, .ain30_pc2, .ain31_pc3 => @panic("ADC on PORTC (AIN29..AIN31) requires MVSYSCFG=SINGLE; MVIO is enabled in this build"),
             else => {},
         }
     }
@@ -338,6 +368,7 @@ pub fn select_channel(channel: PositiveChannel) void {
 
 /// Change MUXNEG for differential or window-compared sampling.
 pub fn select_negative_channel(channel: NegativeChannel) void {
+    assert_mvio_negative_channel_ok(channel);
     adc.MUXNEG.write(.{ .MUXNEG = @fromBackingInt(@intCast(@backingInt(channel))) });
 }
 

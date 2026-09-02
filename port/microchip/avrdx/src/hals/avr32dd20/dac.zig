@@ -68,13 +68,13 @@ pub fn disable() void {
 
 /// Set the output level.
 ///
-/// DATA is left-aligned in a 16-bit register (mask 0xFFC0), so the 10-bit
-/// value is shifted up by six rather than written as-is.
+/// ATDF/DAC.DATA places the 10-bit value in bits [15:6] (mask 0xFFC0); the
+/// generated `DATA` field already encodes that left alignment, so a typed
+/// write is enough -- no manual `<< 6`.
 /// DS40002413 section 34.5.2 "DATA", page 527.
 /// https://ww1.microchip.com/downloads/aemDocuments/documents/MCU08/ProductDocuments/DataSheets/AVR32-16DD20-14-Complete-DataSheet-DS40002413.pdf#page=527
 pub fn set_value(value: u10) void {
-    const shifted: u16 = @as(u16, value) << 6;
-    dac.DATA.write_raw(shifted);
+    dac.DATA.write(.{ .DATA = value });
 }
 
 /// Set the output as a fraction of the reference, in millivolts.

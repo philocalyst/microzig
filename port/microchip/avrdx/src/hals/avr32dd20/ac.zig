@@ -9,6 +9,7 @@
 
 const microzig = @import("microzig");
 const gpio = @import("gpio.zig");
+const capabilities = @import("capabilities.zig");
 
 const ac = microzig.chip.peripherals.AC0;
 const gen = microzig.chip.types.peripherals.AC;
@@ -17,11 +18,21 @@ const gen = microzig.chip.types.peripherals.AC;
 pub const PositiveInput = enum(u3) {
     /// PD6.
     ainp3_pd6 = 0x3,
-    /// PC3.
+    /// PC3 -- PORTC/MVIO; AC-legal only when MVIO is fuse-disabled (SINGLE).
     ainp4_pc3 = 0x4,
 
     fn to_field(input: PositiveInput) gen.AC_MUXPOS {
         return @fromBackingInt(@intCast(@backingInt(input)));
+    }
+
+    /// DS40002413 peripheral-overview note 2 also covers AC on PORTC.
+    pub fn check_mvio(self: PositiveInput) void {
+        if (capabilities.mvio_enabled_by_fuse) {
+            switch (self) {
+                .ainp4_pc3 => @compileError("AC on PORTC requires MVSYSCFG=SINGLE; this build has MVIO enabled"),
+                else => {},
+            }
+        }
     }
 };
 
@@ -29,7 +40,7 @@ pub const PositiveInput = enum(u3) {
 pub const NegativeInput = enum(u3) {
     /// PD7.
     ainn2_pd7 = 0x2,
-    /// PC2.
+    /// PC2 -- PORTC/MVIO; AC-legal only when MVIO is fuse-disabled (SINGLE).
     ainn3_pc2 = 0x3,
     /// The internal DACREF, an 8-bit level derived from `VREF.ACREF`. Lets the
     /// comparator work as a programmable threshold detector with no external
@@ -38,6 +49,16 @@ pub const NegativeInput = enum(u3) {
 
     fn to_field(input: NegativeInput) gen.AC_MUXNEG {
         return @fromBackingInt(@intCast(@backingInt(input)));
+    }
+
+    /// Same PORTC rule as `PositiveInput.check_mvio`.
+    pub fn check_mvio(self: NegativeInput) void {
+        if (capabilities.mvio_enabled_by_fuse) {
+            switch (self) {
+                .ainn3_pc2 => @compileError("AC on PORTC requires MVSYSCFG=SINGLE; this build has MVIO enabled"),
+                else => {},
+            }
+        }
     }
 
     pub fn pin(input: NegativeInput) ?gpio.Pin {
@@ -100,6 +121,9 @@ pub const Config = struct {
 /// DS40002413 section 32.3.1 "Initialization", page 483.
 /// https://ww1.microchip.com/downloads/aemDocuments/documents/MCU08/ProductDocuments/DataSheets/AVR32-16DD20-14-Complete-DataSheet-DS40002413.pdf#page=483
 pub fn configure(comptime config: Config) void {
+    comptime config.positive.check_mvio();
+    comptime config.negative.check_mvio();
+
     ac.CTRLA.write(.{
         .ENABLE = 0,
         .HYSMODE = .NONE,

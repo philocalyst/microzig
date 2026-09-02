@@ -130,12 +130,14 @@ pub fn supply_domain(port: Port) SupplyDomain {
 
 // -- MVIO-dependent analog availability --------------------------------------
 
-/// Whether PC1..PC3 analog channels exist in the current build.
+/// True when the board is fused for dual-supply MVIO
+/// (FUSE.SYSCFG1.MVSYSCFG = DUAL). Board code that ships single-supply should
+/// override this to `false`.
 ///
-/// The ADC mux positions for PC1/PC2/PC3 (AIN29/30/31) sample pads powered
-/// from VDDIO2. When MVIO is disabled by fuse (FUSE.SYSCFG1.MVSYSCFG = SINGLE /
-/// single-supply wiring) those channels are not available; code selecting them
-/// must be compiled against the board's actual fuse setting.
+/// DS40002413 peripheral-overview note 2: ADC (and AC) inputs on PORTC are
+/// available only when MVIO is *disabled* (SINGLE). Drivers gate AIN29..AIN31 /
+/// AC PC pads on `!mvio_enabled_by_fuse`.
+/// https://onlinedocs.microchip.com/oxy/GUID-417F9387-DF9B-42E5-AA91-108A8C58208B-en-US-8/GUID-F94E51A5-03D0-474D-820B-5DF1CA77A1BD.html
 pub const mvio_enabled_by_fuse: bool = true;
 
 // -- Vector table geometry ----------------------------------------------------

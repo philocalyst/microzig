@@ -61,7 +61,7 @@
         },
         .adc_accumulation = .{
             .guid_url = "https://onlinedocs.microchip.com/oxy/GUID-417F9387-DF9B-42E5-AA91-108A8C58208B-en-US-8/GUID-D7770493-3174-4393-AC15-558028DF8C0E.html",
-            .pdf_section = "DS40002413 section 33.3.3.7 Accumulating Results",
+            .pdf_section = "DS40002413 section 33.3.3.6 Accumulation",
             .fact = "Hardware truncates result LSBs above 16 samples; software must rescale.",
         },
     },
